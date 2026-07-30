@@ -1,2 +1,2 @@
 -r requirements.txt
-openfhe>=1.5.1.0,<1.6
+openfhe==1.5.1.0.24.4

@@ -80,9 +80,9 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements-openfhe.txt
 ```
 
-The project uses the official `openfhe` Python package version 1.5.1.x. On a
-server where the binding must be compiled against the local OpenFHE install,
-build
+The project pins the newest official server wheel,
+`openfhe==1.5.1.0.24.4`, for Ubuntu 24.04 and Python 3.12+. On a server where
+the binding must instead be compiled against the local OpenFHE install, build
 [openfhe-python](https://github.com/openfheorg/openfhe-python) with:
 
 ```text
@@ -94,7 +94,11 @@ The OpenFHE C++ library and Python wrapper versions must match.
 For a source build against the server installation:
 
 ```bash
-git clone https://github.com/openfheorg/openfhe-python.git ../openfhe-python
+git clone \
+  --branch v1.5.1.0 \
+  --depth 1 \
+  https://github.com/openfheorg/openfhe-python.git \
+  ../openfhe-python
 .venv/bin/pip install -r requirements.txt
 .venv/bin/pip install "pybind11[global]"
 
