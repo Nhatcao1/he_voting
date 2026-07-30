@@ -3,7 +3,10 @@ build/
 runtime/
 runtime_trustee/
 generated/
+benchmark_data/
+benchmark_results/
+runtime_benchmark*/
+trustee_benchmark*/
 __pycache__/
 .pytest_cache/
 *.pyc
-

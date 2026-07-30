@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,7 @@ class Receipt:
     status: str
     sequence: int
     chain_hash: str
+    processing_ms: float
 
 
 class VotingService:
@@ -71,6 +73,7 @@ class VotingService:
                     chain_hash TEXT NOT NULL,
                     ciphertext_path TEXT NOT NULL,
                     internal_status TEXT NOT NULL,
+                    processing_ms REAL NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
 
@@ -86,6 +89,19 @@ class VotingService:
                 VALUES ('chain_hash', '0000000000000000000000000000000000000000000000000000000000000000');
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(ballots)"
+                ).fetchall()
+            }
+            if "processing_ms" not in columns:
+                connection.execute(
+                    """
+                    ALTER TABLE ballots
+                    ADD COLUMN processing_ms REAL NOT NULL DEFAULT 0
+                    """
+                )
 
     @staticmethod
     def token_hash(voter_token: str) -> str:
@@ -158,6 +174,7 @@ class VotingService:
         voter_token: str,
         encrypted_choice: dict[str, bytes],
     ) -> Receipt:
+        processing_started = time.perf_counter()
         self._validate_ciphertexts(encrypted_choice)
         token_hash = self.token_hash(voter_token)
         ballot_digest = hashlib.sha256(token_hash.encode("ascii"))
@@ -171,7 +188,7 @@ class VotingService:
             with self._connect() as connection:
                 existing = connection.execute(
                     """
-                    SELECT receipt, sequence, chain_hash
+                    SELECT receipt, sequence, chain_hash, processing_ms
                     FROM ballots
                     WHERE receipt = ?
                     """,
@@ -183,6 +200,7 @@ class VotingService:
                         status="recorded",
                         sequence=int(existing["sequence"]),
                         chain_hash=existing["chain_hash"],
+                        processing_ms=float(existing["processing_ms"]),
                     )
 
                 eligible = (
@@ -219,6 +237,9 @@ class VotingService:
                     )
                     internal_status = "evaluated"
 
+                processing_ms = (
+                    time.perf_counter() - processing_started
+                ) * 1000.0
                 connection.execute(
                     """
                     INSERT INTO ballots(
@@ -229,9 +250,10 @@ class VotingService:
                         chain_hash,
                         ciphertext_path,
                         internal_status,
+                        processing_ms,
                         created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         receipt_id,
@@ -245,6 +267,7 @@ class VotingService:
                             )
                         ),
                         internal_status,
+                        processing_ms,
                         datetime.now(timezone.utc).isoformat(),
                     ),
                 )
@@ -262,6 +285,7 @@ class VotingService:
                     status="recorded",
                     sequence=sequence,
                     chain_hash=chain_hash,
+                    processing_ms=processing_ms,
                 )
 
     def _apply_encrypted_vote(
@@ -326,7 +350,7 @@ class VotingService:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT receipt, sequence, chain_hash
+                SELECT receipt, sequence, chain_hash, processing_ms
                 FROM ballots
                 WHERE receipt = ?
                 """,
@@ -339,6 +363,7 @@ class VotingService:
             status="recorded",
             sequence=int(row["sequence"]),
             chain_hash=row["chain_hash"],
+            processing_ms=float(row["processing_ms"]),
         )
 
     def bulletin_board(self) -> list[dict[str, object]]:

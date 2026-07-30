@@ -110,6 +110,7 @@ def test_encrypted_duplicate_is_not_counted(
 
     assert [receipt.sequence for receipt in receipts] == [1, 2, 3, 4]
     assert {receipt.status for receipt in receipts} == {"recorded"}
+    assert all(receipt.processing_ms > 0 for receipt in receipts)
     assert len(service.bulletin_board()) == 4
 
     crypto = CryptoCli(CRYPTO_BINARY)
@@ -170,6 +171,8 @@ def test_api_accepts_ciphertext_and_returns_same_shape_for_duplicate(
         assert set(responses[0]) == set(responses[1])
         assert responses[0]["status"] == "recorded"
         assert responses[1]["status"] == "recorded"
+        assert responses[0]["processing_ms"] > 0
+        assert responses[1]["processing_ms"] > 0
         assert client.get("/health").json()["evaluator"] == "openfhe"
         assert len(client.get("/election/bulletin-board").json()) == 2
 

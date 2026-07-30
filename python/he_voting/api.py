@@ -24,6 +24,7 @@ class VoteReceiptResponse(BaseModel):
     status: str
     sequence: int
     chain_hash: str
+    processing_ms: float
 
 
 def _base64_file(path: Path) -> str:
