@@ -8,8 +8,6 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Settings:
     runtime_dir: Path
-    crypto_bin: Path
-    evaluator: str = "openfhe"
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -21,13 +19,6 @@ class Settings:
                     project_dir / "runtime",
                 )
             ).resolve(),
-            crypto_bin=Path(
-                os.environ.get(
-                    "HE_VOTING_CRYPTO_BIN",
-                    project_dir / "build" / "he_voting_crypto",
-                )
-            ).resolve(),
-            evaluator=os.environ.get("HE_EVALUATOR", "openfhe"),
         )
 
     @property
@@ -51,10 +42,7 @@ class Settings:
         return self.runtime_dir / "voting.sqlite3"
 
     def validate(self) -> None:
-        if self.evaluator not in {"openfhe", "heir-openfhe"}:
-            raise ValueError(f"unsupported HE evaluator: {self.evaluator}")
         required_files = [
-            self.crypto_bin,
             self.public_dir / "crypto_context.bin",
             self.public_dir / "public_key.bin",
             self.public_dir / "eval_mult_keys.bin",

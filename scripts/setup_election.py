@@ -13,7 +13,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "python"))
 
-from he_voting.crypto_cli import CryptoCli  # noqa: E402
+from he_voting.openfhe_backend import OpenFHEBackend  # noqa: E402
 from he_voting.service import VotingService  # noqa: E402
 from he_voting.settings import Settings  # noqa: E402
 
@@ -42,8 +42,6 @@ def setup_election(
     roster_path: Path,
     runtime_dir: Path,
     trustee_dir: Path,
-    crypto_binary: Path,
-    evaluator: str,
 ) -> dict[str, object]:
     if runtime_dir.exists() and any(runtime_dir.iterdir()):
         raise FileExistsError(
@@ -54,6 +52,7 @@ def setup_election(
             f"trustee directory is not empty: {trustee_dir}"
         )
 
+    crypto = OpenFHEBackend()
     runtime_dir.mkdir(parents=True, exist_ok=True)
     trustee_dir.mkdir(parents=True, exist_ok=True)
     public_dir = runtime_dir / "public"
@@ -67,36 +66,22 @@ def setup_election(
         hashlib.sha256(token.encode("ascii")).hexdigest()
         for token in tokens
     ]
-    token_keys_path = runtime_dir / "token_keys.txt"
-    token_keys_path.write_text(
-        "".join(f"{token_hash}\n" for token_hash in token_hashes),
-        encoding="ascii",
-    )
-
-    crypto = CryptoCli(crypto_binary)
     crypto_parameters = crypto.setup(
         public_dir=public_dir,
         trustee_dir=trustee_dir,
         state_dir=state_dir,
     )
     crypto.initialize_flags(
-        public_dir=public_dir,
-        token_keys=token_keys_path,
+        token_hashes=token_hashes,
         flags_dir=flags_dir,
     )
-    token_keys_path.unlink()
 
-    settings = Settings(
-        runtime_dir=runtime_dir,
-        crypto_bin=crypto_binary,
-        evaluator=evaluator,
-    )
+    settings = Settings(runtime_dir=runtime_dir)
     service = VotingService(settings)
     service.register_tokens(tokens)
 
     manifest = {
         "employee_count": len(tokens),
-        "evaluator": evaluator,
         "crypto": crypto_parameters,
     }
     (runtime_dir / "election.json").write_text(
@@ -113,16 +98,6 @@ def main() -> None:
     parser.add_argument("--roster", type=Path, required=True)
     parser.add_argument("--runtime-dir", type=Path, required=True)
     parser.add_argument("--trustee-dir", type=Path, required=True)
-    parser.add_argument(
-        "--crypto-bin",
-        type=Path,
-        default=PROJECT_DIR / "build" / "he_voting_crypto",
-    )
-    parser.add_argument(
-        "--evaluator",
-        choices=["openfhe", "heir-openfhe"],
-        default="openfhe",
-    )
     parser.add_argument(
         "--force",
         action="store_true",
@@ -141,8 +116,6 @@ def main() -> None:
         roster_path=arguments.roster.resolve(),
         runtime_dir=runtime_dir,
         trustee_dir=trustee_dir,
-        crypto_binary=arguments.crypto_bin.resolve(),
-        evaluator=arguments.evaluator,
     )
     print(json.dumps(manifest))
 

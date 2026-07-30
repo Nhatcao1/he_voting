@@ -49,7 +49,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def health() -> dict[str, str]:
         return {
             "status": "ok",
-            "evaluator": active_settings.evaluator,
+            "backend": "openfhe-python",
         }
 
     @app.get("/election/public-material")

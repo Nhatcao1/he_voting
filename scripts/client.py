@@ -6,7 +6,6 @@ import base64
 import csv
 import json
 import sys
-import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -15,7 +14,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "python"))
 
-from he_voting.crypto_cli import CryptoCli  # noqa: E402
+from he_voting.openfhe_backend import OpenFHEBackend  # noqa: E402
 
 
 def find_voter_token(roster_path: Path, employee_id: str) -> str:
@@ -26,24 +25,21 @@ def find_voter_token(roster_path: Path, employee_id: str) -> str:
     raise ValueError(f"employee ID not found in local roster: {employee_id}")
 
 
+class VoteEncryptor:
+    """Loads public election material once and encrypts rows separately."""
+
+    def __init__(self, public_directory: Path):
+        self.backend = OpenFHEBackend(public_directory.resolve())
+
+    def encrypt_choice(self, choice: str) -> dict[str, bytes]:
+        return self.backend.encrypt_choice(choice)
+
+
 def encrypt_choice(
-    crypto_binary: Path,
     public_directory: Path,
     choice: str,
 ) -> dict[str, bytes]:
-    with tempfile.TemporaryDirectory(prefix="he-vote-client-") as temporary:
-        output_directory = Path(temporary) / "choice"
-        CryptoCli(crypto_binary).encrypt_choice(
-            public_dir=public_directory,
-            choice=choice,
-            output_directory=output_directory,
-        )
-        return {
-            choice_name: (
-                output_directory / f"choice_{choice_name}.ct"
-            ).read_bytes()
-            for choice_name in ("a", "b", "c")
-        }
+    return VoteEncryptor(public_directory).encrypt_choice(choice)
 
 
 def submit_vote(
@@ -92,11 +88,6 @@ def main() -> None:
     parser.add_argument("--choice", choices=["A", "B", "C"], required=True)
     parser.add_argument("--roster", type=Path, required=True)
     parser.add_argument("--public-dir", type=Path, required=True)
-    parser.add_argument(
-        "--crypto-bin",
-        type=Path,
-        default=PROJECT_DIR / "build" / "he_voting_crypto",
-    )
     parser.add_argument("--api-url", default="http://127.0.0.1:8000")
     arguments = parser.parse_args()
 
@@ -105,7 +96,6 @@ def main() -> None:
         arguments.employee_id,
     )
     ciphertext = encrypt_choice(
-        arguments.crypto_bin.resolve(),
         arguments.public_dir.resolve(),
         arguments.choice,
     )

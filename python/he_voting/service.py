@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from .crypto_cli import CryptoCli
+from .openfhe_backend import OpenFHEBackend
 from .settings import Settings
 
 
@@ -40,7 +40,10 @@ class VotingService:
     def __init__(self, settings: Settings):
         settings.validate()
         self.settings = settings
-        self.crypto = CryptoCli(settings.crypto_bin)
+        self.crypto = OpenFHEBackend(
+            settings.public_dir,
+            load_evaluation_keys=True,
+        )
         self._lock = threading.Lock()
 
         settings.ballots_dir.mkdir(parents=True, exist_ok=True)
@@ -324,7 +327,6 @@ class VotingService:
                 ballot_directory=ballot_directory,
                 flag_output=next_flag,
                 tally_output_directory=next_tally_directory,
-                evaluator=self.settings.evaluator,
             )
 
             try:

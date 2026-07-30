@@ -10,7 +10,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "python"))
 
-from he_voting.crypto_cli import CryptoCli  # noqa: E402
+from he_voting.openfhe_backend import OpenFHEBackend  # noqa: E402
 
 
 def main() -> None:
@@ -20,11 +20,6 @@ def main() -> None:
     parser.add_argument("--runtime-dir", type=Path, required=True)
     parser.add_argument("--trustee-dir", type=Path, required=True)
     parser.add_argument(
-        "--crypto-bin",
-        type=Path,
-        default=PROJECT_DIR / "build" / "he_voting_crypto",
-    )
-    parser.add_argument(
         "--publish",
         action="store_true",
         help="Write the decrypted aggregate to runtime/published_result.json.",
@@ -32,8 +27,7 @@ def main() -> None:
     arguments = parser.parse_args()
 
     runtime_dir = arguments.runtime_dir.resolve()
-    result = CryptoCli(arguments.crypto_bin.resolve()).decrypt_result(
-        public_dir=runtime_dir / "public",
+    result = OpenFHEBackend(runtime_dir / "public").decrypt_result(
         trustee_dir=arguments.trustee_dir.resolve(),
         tally_directory=runtime_dir / "state",
     )

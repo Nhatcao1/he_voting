@@ -12,22 +12,15 @@ from fastapi.testclient import TestClient
 from client import encrypt_choice, find_voter_token
 from generate_data import generate
 from he_voting.api import create_app
-from he_voting.crypto_cli import CryptoCli
+from he_voting.openfhe_backend import OpenFHEBackend
 from he_voting.service import VotingService
 from he_voting.settings import Settings
 from setup_election import setup_election
 
 
-PROJECT_DIR = Path(__file__).resolve().parents[1]
-CRYPTO_BINARY = PROJECT_DIR / "build" / "he_voting_crypto"
-
-
 @pytest.fixture()
 def election(tmp_path: Path) -> dict[str, Path | Settings]:
-    if not CRYPTO_BINARY.is_file():
-        pytest.fail(
-            "native crypto binary is missing; build it with cmake before tests"
-        )
+    pytest.importorskip("openfhe")
 
     generated = tmp_path / "generated"
     runtime = tmp_path / "runtime"
@@ -45,14 +38,8 @@ def election(tmp_path: Path) -> dict[str, Path | Settings]:
         roster_path=generated / "roster.csv",
         runtime_dir=runtime,
         trustee_dir=trustee,
-        crypto_binary=CRYPTO_BINARY,
-        evaluator="openfhe",
     )
-    settings = Settings(
-        runtime_dir=runtime,
-        crypto_bin=CRYPTO_BINARY,
-        evaluator="openfhe",
-    )
+    settings = Settings(runtime_dir=runtime)
     return {
         "generated": generated,
         "runtime": runtime,
@@ -102,7 +89,6 @@ def test_encrypted_duplicate_is_not_counted(
             row["employee_id"],
         )
         ciphertext = encrypt_choice(
-            CRYPTO_BINARY,
             runtime / "public",
             row["choice"],
         )
@@ -113,9 +99,8 @@ def test_encrypted_duplicate_is_not_counted(
     assert all(receipt.processing_ms > 0 for receipt in receipts)
     assert len(service.bulletin_board()) == 4
 
-    crypto = CryptoCli(CRYPTO_BINARY)
+    crypto = OpenFHEBackend(runtime / "public")
     result = crypto.decrypt_result(
-        public_dir=runtime / "public",
         trustee_dir=trustee,
         tally_directory=runtime / "state",
     )
@@ -146,7 +131,6 @@ def test_api_accepts_ciphertext_and_returns_same_shape_for_duplicate(
         responses = []
         for choice in ("A", "C"):
             ciphertext = encrypt_choice(
-                CRYPTO_BINARY,
                 runtime / "public",
                 choice,
             )
@@ -173,7 +157,10 @@ def test_api_accepts_ciphertext_and_returns_same_shape_for_duplicate(
         assert responses[1]["status"] == "recorded"
         assert responses[0]["processing_ms"] > 0
         assert responses[1]["processing_ms"] > 0
-        assert client.get("/health").json()["evaluator"] == "openfhe"
+        assert (
+            client.get("/health").json()["backend"]
+            == "openfhe-python"
+        )
         assert len(client.get("/election/bulletin-board").json()) == 2
 
 
@@ -192,12 +179,10 @@ def test_concurrent_duplicate_requests_count_at_most_once(
     token = find_voter_token(generated / "roster.csv", "100001")
     service = VotingService(settings)
     encrypted_a = encrypt_choice(
-        CRYPTO_BINARY,
         runtime / "public",
         "A",
     )
     encrypted_b = encrypt_choice(
-        CRYPTO_BINARY,
         runtime / "public",
         "B",
     )
@@ -211,8 +196,7 @@ def test_concurrent_duplicate_requests_count_at_most_once(
         )
     assert sorted(receipt.sequence for receipt in receipts) == [1, 2]
 
-    result = CryptoCli(CRYPTO_BINARY).decrypt_result(
-        public_dir=runtime / "public",
+    result = OpenFHEBackend(runtime / "public").decrypt_result(
         trustee_dir=trustee,
         tally_directory=runtime / "state",
     )
@@ -228,8 +212,8 @@ def test_same_choice_encrypts_to_different_ciphertexts(
 ) -> None:
     runtime = election["runtime"]
     assert isinstance(runtime, Path)
-    first = encrypt_choice(CRYPTO_BINARY, runtime / "public", "A")
-    second = encrypt_choice(CRYPTO_BINARY, runtime / "public", "A")
+    first = encrypt_choice(runtime / "public", "A")
+    second = encrypt_choice(runtime / "public", "A")
     assert first != second
     assert set(first) == {"a", "b", "c"}
     assert all(first[name] != second[name] for name in ("a", "b", "c"))

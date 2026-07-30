@@ -55,7 +55,8 @@ contributes encrypted zero to all three counters.
 ## Components
 
 ```text
-cpp/                         OpenFHE BFV evaluator and command-line runtime
+python/he_voting/openfhe_backend.py
+                             Complete OpenFHE BFV implementation
 python/he_voting/api.py      FastAPI endpoints
 python/he_voting/service.py  Ordered processing, SQLite, receipts, hash chain
 scripts/generate_data.py     Roster and two-column vote generator
@@ -66,28 +67,63 @@ scripts/decrypt_result.py    Trustee-side aggregate-only decryption
 tests/                       Duplicate, API, concurrency, and privacy tests
 ```
 
-## 1. Build OpenFHE evaluator
+The HE context and evaluation keys are loaded once per Python process. Every
+row still receives three fresh randomized ciphertexts and is processed
+synchronously.
 
-From the cloned repository root:
+## 1. Install OpenFHE Python
 
-```bash
-cmake \
-  -S . \
-  -B build \
-  -DOpenFHE_DIR=/usr/local/lib/OpenFHE \
-  -DCMAKE_BUILD_TYPE=Release
-
-cmake --build build --parallel 2
-```
-
-## 2. Create Python environment
+Create the environment and install the official bindings:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements-openfhe.txt
 ```
 
-## 3. Generate the duplicate fixture
+The project uses the official `openfhe` Python package version 1.5.1.x. On a
+server where the binding must be compiled against the local OpenFHE install,
+build
+[openfhe-python](https://github.com/openfheorg/openfhe-python) with:
+
+```text
+-DCMAKE_PREFIX_PATH=/usr/local/lib/OpenFHE
+```
+
+The OpenFHE C++ library and Python wrapper versions must match.
+
+For a source build against the server installation:
+
+```bash
+git clone https://github.com/openfheorg/openfhe-python.git ../openfhe-python
+.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install "pybind11[global]"
+
+OPENFHE_PYTHON_SITE="$(
+  .venv/bin/python -c \
+    'import sysconfig; print(sysconfig.get_paths()["purelib"])'
+)"
+
+cmake \
+  -S ../openfhe-python \
+  -B ../openfhe-python/build \
+  -DCMAKE_PREFIX_PATH=/usr/local/lib/OpenFHE \
+  -DPYTHON_EXECUTABLE_PATH="$PWD/.venv/bin/python" \
+  -DCMAKE_INSTALL_PREFIX="$OPENFHE_PYTHON_SITE"
+
+cmake --build ../openfhe-python/build --parallel 2
+cmake --install ../openfhe-python/build
+```
+
+Verify the binding:
+
+```bash
+.venv/bin/python -c "import openfhe; print(openfhe.__file__)"
+```
+
+Create a fresh election runtime after migrating. Do not continue an old runtime
+created with a different OpenFHE library/wrapper version.
+
+## 2. Generate the duplicate fixture
 
 ```bash
 .venv/bin/python \
@@ -101,27 +137,24 @@ python3 -m venv .venv
 The vote CSV contains only `employee_id,choice`. The roster contains the local
 employee-to-token mapping and must stay on the client side.
 
-## 4. Initialize an election
+## 3. Initialize an election
 
 ```bash
 .venv/bin/python \
   scripts/setup_election.py \
   --roster generated/roster.csv \
   --runtime-dir runtime \
-  --trustee-dir runtime_trustee \
-  --crypto-bin build/he_voting_crypto
+  --trustee-dir runtime_trustee
 ```
 
 The API runtime does not contain the secret key. It is written only to
 `runtime_trustee`.
 
-## 5. Run the API
+## 4. Run the API
 
 ```bash
 export PYTHONPATH="$PWD/python"
 export HE_VOTING_RUNTIME="$PWD/runtime"
-export HE_VOTING_CRYPTO_BIN="$PWD/build/he_voting_crypto"
-export HE_EVALUATOR="openfhe"
 
 .venv/bin/uvicorn \
   he_voting.api:create_app \
@@ -134,7 +167,7 @@ export HE_EVALUATOR="openfhe"
 Exactly one API worker is required by this MVP so encrypted flag and tally
 updates remain ordered.
 
-## 6. Submit rows one at a time
+## 5. Submit rows one at a time
 
 ```bash
 .venv/bin/python \
@@ -142,7 +175,6 @@ updates remain ordered.
   --votes generated/votes.csv \
   --roster generated/roster.csv \
   --public-dir runtime/public \
-  --crypto-bin build/he_voting_crypto \
   --api-url http://127.0.0.1:8000
 ```
 
@@ -154,18 +186,16 @@ Or submit one vote:
   --employee-id 100001 \
   --choice A \
   --roster generated/roster.csv \
-  --public-dir runtime/public \
-  --crypto-bin build/he_voting_crypto
+  --public-dir runtime/public
 ```
 
-## 7. Trustee decrypts only the total
+## 6. Trustee decrypts only the total
 
 ```bash
 .venv/bin/python \
   scripts/decrypt_result.py \
   --runtime-dir runtime \
   --trustee-dir runtime_trustee \
-  --crypto-bin build/he_voting_crypto \
   --publish
 ```
 
@@ -175,23 +205,27 @@ For the four-row fixture, the expected result is:
 {"A": 1, "B": 1, "C": 1}
 ```
 
-No flag or individual-ballot decryption command exists. The native decryption
-command accepts only the directory containing the final A, B, and C aggregate
+No flag or individual-ballot decryption command exists. The trustee decryption
+operation accepts only the directory containing the final A, B, and C aggregate
 ciphertexts.
 
-## 8. Run tests
+## 7. Run tests
 
 ```bash
 .venv/bin/pytest
 ```
 
-## HEIR option
+## Core HE calculation
 
-The evaluator interface accepts `HE_EVALUATOR=heir-openfhe`, but that choice
-fails closed until a reviewed HEIR-generated OpenFHE kernel is compiled into
-the native binary. OpenFHE is the implemented evaluator. HEIR would generate
-the same fixed `EvaluateVote` arithmetic and still use OpenFHE for ciphertexts,
-keys, serialization, and execution.
+The complete encrypted voting calculation is in:
+
+```text
+python/he_voting/openfhe_backend.py
+```
+
+`OpenFHEBackend.evaluate()` performs one subtraction, three multiplications,
+and four additions. The service never decrypts a ballot, flag, or running
+tally.
 
 ## Simple timing benchmark
 
@@ -220,8 +254,7 @@ votes:
 .venv/bin/python scripts/setup_election.py \
   --roster benchmark_data/votes_100_dup10/roster.csv \
   --runtime-dir runtime_benchmark_100 \
-  --trustee-dir trustee_benchmark_100 \
-  --crypto-bin build/he_voting_crypto
+  --trustee-dir trustee_benchmark_100
 ```
 
 Then run the local sequential benchmark:
@@ -231,7 +264,6 @@ Then run the local sequential benchmark:
   --votes benchmark_data/votes_100_dup10/votes.csv \
   --roster benchmark_data/votes_100_dup10/roster.csv \
   --runtime-dir runtime_benchmark_100 \
-  --crypto-bin build/he_voting_crypto \
   --out-dir benchmark_results/100_dup10
 ```
 

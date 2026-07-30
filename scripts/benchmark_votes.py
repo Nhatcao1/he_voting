@@ -15,7 +15,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "scripts"))
 sys.path.insert(0, str(PROJECT_DIR / "python"))
 
-from client import encrypt_choice  # noqa: E402
+from client import VoteEncryptor  # noqa: E402
 from he_voting.service import VotingService  # noqa: E402
 from he_voting.settings import Settings  # noqa: E402
 
@@ -68,27 +68,14 @@ def main() -> None:
     parser.add_argument("--votes", type=Path, required=True)
     parser.add_argument("--roster", type=Path, required=True)
     parser.add_argument("--runtime-dir", type=Path, required=True)
-    parser.add_argument(
-        "--crypto-bin",
-        type=Path,
-        default=PROJECT_DIR / "build" / "he_voting_crypto",
-    )
-    parser.add_argument(
-        "--evaluator",
-        choices=["openfhe", "heir-openfhe"],
-        default="openfhe",
-    )
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--progress-every", type=int, default=100)
     arguments = parser.parse_args()
 
     votes = read_votes(arguments.votes.resolve())
     token_by_employee = read_roster_tokens(arguments.roster.resolve())
-    settings = Settings(
-        runtime_dir=arguments.runtime_dir.resolve(),
-        crypto_bin=arguments.crypto_bin.resolve(),
-        evaluator=arguments.evaluator,
-    )
+    settings = Settings(runtime_dir=arguments.runtime_dir.resolve())
+    encryptor = VoteEncryptor(settings.public_dir)
     service = VotingService(settings)
     output_directory = arguments.out_dir.resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
@@ -133,11 +120,7 @@ def main() -> None:
 
             vote_started = time.perf_counter()
             encryption_started = time.perf_counter()
-            ciphertexts = encrypt_choice(
-                arguments.crypto_bin.resolve(),
-                settings.public_dir,
-                row["choice"],
-            )
+            ciphertexts = encryptor.encrypt_choice(row["choice"])
             encryption_ms = (
                 time.perf_counter() - encryption_started
             ) * 1000.0

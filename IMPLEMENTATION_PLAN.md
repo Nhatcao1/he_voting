@@ -118,30 +118,29 @@ Only the aggregate is normally decrypted:
 ```
 
 No flag or individual-ballot decryption command exists. Only the three final
-aggregate counters can be passed to the native result-decryption command.
+aggregate counters can be passed to the trustee result-decryption operation.
 
 ## 6. Implemented technologies
 
 | Part | Technology |
 |---|---|
-| Data generator and clients | Python |
+| Application and clients | Python |
 | HE scheme | OpenFHE BFV-RNS |
-| HE evaluator | C++17 |
+| HE integration | Official `openfhe` Python bindings |
 | Web API | FastAPI |
 | Ordered state and audit metadata | SQLite |
 | Transport in deployment | HTTPS |
 | Secret key location | Separate trustee directory |
-| Optional future kernel | HEIR-generated OpenFHE C++ |
 
 The BFV parameters use exact integer arithmetic, a plaintext modulus of `65537`,
 and OpenFHE's 128-bit classical security setting.
 
-## 7. Evaluator interface
+## 7. Persistent Python backend
 
-The native application uses:
+The complete HE calculation is implemented by:
 
 ```text
-VoteEvaluator.evaluate(
+OpenFHEBackend.evaluate(
     encrypted_choice_A,
     encrypted_choice_B,
     encrypted_choice_C,
@@ -153,30 +152,16 @@ VoteEvaluator.evaluate(
 )
 ```
 
-The implemented evaluator is:
-
-```text
-HE_EVALUATOR=openfhe
-```
-
-The configuration also recognizes:
-
-```text
-HE_EVALUATOR=heir-openfhe
-```
-
-That option fails closed until a reviewed HEIR-generated kernel is compiled into
-the executable. HEIR would compile the fixed scalar calculation once
-and still use OpenFHE at runtime. It is not run for every CSV row.
-
-An evaluator cannot change during an election because its context and
-ciphertexts must remain compatible.
+The official bindings execute OpenFHE's compiled C++ implementation underneath
+Python. The context, public key, and multiplication evaluation keys remain
+loaded for the lifetime of the Python process. Every row is still freshly
+encrypted and evaluated separately.
 
 ## 8. Implemented API
 
 | Route | Purpose |
 |---|---|
-| `GET /health` | Service and evaluator status |
+| `GET /health` | Service and backend status |
 | `GET /election/public-material` | BFV context and public key |
 | `POST /election/vote` | Random voter token plus three scalar A/B/C ciphertexts |
 | `GET /election/receipt/{id}` | Receipt inclusion check |
@@ -235,15 +220,11 @@ Current limits:
 
 - the plaintext modulus limits the total count to below `65537`;
 - every eligible employee currently has a separate BFV flag ciphertext;
-- every API request launches the native evaluator process;
+- every row serializes three ballot ciphertexts for durable evidence;
 - SQLite and one API worker favor correctness over throughput.
 
-Before a very large deployment, benchmark ciphertext storage and replace
-per-request process startup with a persistent native evaluator. PostgreSQL can
+Before a very large deployment, benchmark ciphertext storage. PostgreSQL can
 replace SQLite without changing the HE calculation.
-
-HEIR may optimize or simplify generation of the fixed evaluator, but it does
-not generate test rows and does not replace OpenFHE execution.
 
 ## 12. Security limitations
 
