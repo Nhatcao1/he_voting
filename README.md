@@ -213,8 +213,8 @@ benchmark_data/votes_1000_dup10
 benchmark_data/votes_10000_dup10
 ```
 
-Prepare and start a fresh election for the quota being measured. Example for
-100 votes:
+Prepare a fresh local election for the quota being measured. Example for 100
+votes:
 
 ```bash
 .venv/bin/python scripts/setup_election.py \
@@ -222,27 +222,16 @@ Prepare and start a fresh election for the quota being measured. Example for
   --runtime-dir runtime_benchmark_100 \
   --trustee-dir trustee_benchmark_100 \
   --crypto-bin build/he_voting_crypto
-
-export PYTHONPATH="$PWD/python"
-export HE_VOTING_RUNTIME="$PWD/runtime_benchmark_100"
-export HE_VOTING_CRYPTO_BIN="$PWD/build/he_voting_crypto"
-
-.venv/bin/uvicorn he_voting.api:create_app \
-  --factory \
-  --host 127.0.0.1 \
-  --port 8000 \
-  --workers 1
 ```
 
-In another terminal, run:
+Then run the local sequential benchmark:
 
 ```bash
 .venv/bin/python scripts/benchmark_votes.py \
   --votes benchmark_data/votes_100_dup10/votes.csv \
   --roster benchmark_data/votes_100_dup10/roster.csv \
-  --public-dir runtime_benchmark_100/public \
+  --runtime-dir runtime_benchmark_100 \
   --crypto-bin build/he_voting_crypto \
-  --api-url http://127.0.0.1:8000 \
   --out-dir benchmark_results/100_dup10
 ```
 
@@ -252,13 +241,13 @@ for each case.
 The benchmark writes:
 
 ```text
-per_vote_times.csv   one row per HTTP vote
+per_vote_times.csv   one row per separately encrypted and processed vote
 summary.json         total time, votes/second, average, median, and p95
 ```
 
-Timing is split into client encryption, HTTP round trip, server processing, and
-complete end-to-end time. Every vote is still encrypted and submitted
-separately.
+Timing is split into fresh encryption, encrypted vote processing, and complete
+end-to-end time. The script waits for each row to finish before starting the
+next row. It does not start an HTTP server or process votes in the background.
 
 The 10,000-vote case is intentionally heavy: each vote contains three BFV
 ciphertexts and each eligible employee has an encrypted flag. Reserve

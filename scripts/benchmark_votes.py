@@ -13,8 +13,11 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "scripts"))
+sys.path.insert(0, str(PROJECT_DIR / "python"))
 
-from client import encrypt_choice, submit_vote  # noqa: E402
+from client import encrypt_choice  # noqa: E402
+from he_voting.service import VotingService  # noqa: E402
+from he_voting.settings import Settings  # noqa: E402
 
 
 def read_roster_tokens(path: Path) -> dict[str, str]:
@@ -58,32 +61,41 @@ def metric_summary(values: list[float]) -> dict[str, float]:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Submit every benchmark row individually through the real HTTP API "
-            "and record per-vote and overall processing time."
+            "Encrypt and process every benchmark row synchronously, one at a "
+            "time, and record per-vote and overall timing."
         )
     )
     parser.add_argument("--votes", type=Path, required=True)
     parser.add_argument("--roster", type=Path, required=True)
-    parser.add_argument("--public-dir", type=Path, required=True)
+    parser.add_argument("--runtime-dir", type=Path, required=True)
     parser.add_argument(
         "--crypto-bin",
         type=Path,
         default=PROJECT_DIR / "build" / "he_voting_crypto",
     )
-    parser.add_argument("--api-url", default="http://127.0.0.1:8000")
+    parser.add_argument(
+        "--evaluator",
+        choices=["openfhe", "heir-openfhe"],
+        default="openfhe",
+    )
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--progress-every", type=int, default=100)
     arguments = parser.parse_args()
 
     votes = read_votes(arguments.votes.resolve())
     token_by_employee = read_roster_tokens(arguments.roster.resolve())
+    settings = Settings(
+        runtime_dir=arguments.runtime_dir.resolve(),
+        crypto_bin=arguments.crypto_bin.resolve(),
+        evaluator=arguments.evaluator,
+    )
+    service = VotingService(settings)
     output_directory = arguments.out_dir.resolve()
     output_directory.mkdir(parents=True, exist_ok=True)
     per_vote_path = output_directory / "per_vote_times.csv"
 
     encryption_times: list[float] = []
-    http_times: list[float] = []
-    server_times: list[float] = []
+    processing_times: list[float] = []
     end_to_end_times: list[float] = []
     seen_employees: set[str] = set()
     duplicate_count = 0
@@ -98,8 +110,7 @@ def main() -> None:
                 "row",
                 "is_duplicate",
                 "encrypt_ms",
-                "http_round_trip_ms",
-                "server_processing_ms",
+                "encrypted_processing_ms",
                 "end_to_end_ms",
                 "receipt",
             ],
@@ -124,38 +135,36 @@ def main() -> None:
             encryption_started = time.perf_counter()
             ciphertexts = encrypt_choice(
                 arguments.crypto_bin.resolve(),
-                arguments.public_dir.resolve(),
+                settings.public_dir,
                 row["choice"],
             )
             encryption_ms = (
                 time.perf_counter() - encryption_started
             ) * 1000.0
 
-            http_started = time.perf_counter()
-            response = submit_vote(
-                arguments.api_url,
+            processing_started = time.perf_counter()
+            receipt = service.submit(
                 voter_token,
                 ciphertexts,
             )
-            http_ms = (time.perf_counter() - http_started) * 1000.0
+            processing_ms = (
+                time.perf_counter() - processing_started
+            ) * 1000.0
             end_to_end_ms = (
                 time.perf_counter() - vote_started
             ) * 1000.0
-            server_ms = float(response["processing_ms"])
 
             encryption_times.append(encryption_ms)
-            http_times.append(http_ms)
-            server_times.append(server_ms)
+            processing_times.append(processing_ms)
             end_to_end_times.append(end_to_end_ms)
             writer.writerow(
                 {
                     "row": row_number,
                     "is_duplicate": str(is_duplicate).lower(),
                     "encrypt_ms": f"{encryption_ms:.3f}",
-                    "http_round_trip_ms": f"{http_ms:.3f}",
-                    "server_processing_ms": f"{server_ms:.3f}",
+                    "encrypted_processing_ms": f"{processing_ms:.3f}",
                     "end_to_end_ms": f"{end_to_end_ms:.3f}",
-                    "receipt": response["receipt"],
+                    "receipt": receipt.receipt,
                 }
             )
             output_file.flush()
@@ -172,7 +181,8 @@ def main() -> None:
                         {
                             "processed": row_number,
                             "total": len(votes),
-                            "latest_server_ms": round(server_ms, 3),
+                            "latest_encrypt_ms": round(encryption_ms, 3),
+                            "latest_processing_ms": round(processing_ms, 3),
                         }
                     ),
                     flush=True,
@@ -192,8 +202,7 @@ def main() -> None:
         ),
         "per_vote_ms": {
             "encryption": metric_summary(encryption_times),
-            "http_round_trip": metric_summary(http_times),
-            "server_processing": metric_summary(server_times),
+            "encrypted_processing": metric_summary(processing_times),
             "end_to_end": metric_summary(end_to_end_times),
         },
         "per_vote_csv": str(per_vote_path),
