@@ -1,7 +1,8 @@
 # HE Employee A/B/C Voting MVP
 
-This project exposes a web API for one-choice employee voting while keeping the
-choice, `has_voted` state, and A/B/C tally encrypted with OpenFHE BFV.
+This project exposes a web API for one-choice employee voting. Participation is
+tracked by a token hash in SQLite, while each A/B/C choice and the running
+A/B/C tally remain encrypted with OpenFHE BFV.
 
 The generated vote file stays intentionally small:
 
@@ -10,47 +11,38 @@ employee_id,choice
 100001,A
 100002,B
 100003,C
-100001,B
+100004,A
 ```
 
-The final row is a deliberate duplicate. Its encrypted choice is processed but
-adds zero to the tally.
+Every row is independently encrypted, retained, and added to the encrypted
+tally.
 
 ## Privacy boundary
 
-The employee ID is used only by the local voter client. The local roster maps it
-to a random per-election voter token. The API receives:
+The employee ID is used by the local voter client. The local roster maps it to
+a per-election voter token. The API receives:
 
 ```text
-random voter token
+per-election voter token
 three separate encrypted scalar choice bits: A, B, C
 ```
 
-The random token lets the server locate one encrypted `has_voted` ciphertext
-without learning the employee ID. The server can recognize that the same token
-was submitted again, but it cannot map that token to an employee or decrypt the
-choice, flag, or tally.
+The server hashes the token and records that hash with the ballot metadata. An
+administrator who also has the restricted roster can determine whether an
+employee submitted, but the employee's A/B/C choice remains encrypted. This
+MVP does not enforce one submission per employee.
 
 The OpenFHE computation is:
 
 ```text
-can_vote = Enc(1) - encrypted_has_voted
-
-accepted_A = can_vote * encrypted_choice_A
-accepted_B = can_vote * encrypted_choice_B
-accepted_C = can_vote * encrypted_choice_C
-
-new_tally_A = encrypted_tally_A + accepted_A
-new_tally_B = encrypted_tally_B + accepted_B
-new_tally_C = encrypted_tally_C + accepted_C
-
-new_flag = encrypted_has_voted + can_vote
+new_tally_A = encrypted_tally_A + encrypted_choice_A
+new_tally_B = encrypted_tally_B + encrypted_choice_B
+new_tally_C = encrypted_tally_C + encrypted_choice_C
 ```
 
-All seven values above are separate BFV coefficient-encoded scalar
-ciphertexts. No choice or tally uses SIMD packing. The first request changes
-the encrypted flag from `Enc(0)` to `Enc(1)`. Every duplicate therefore
-contributes encrypted zero to all three counters.
+All six values above are separate BFV coefficient-encoded scalar ciphertexts.
+No choice or tally uses SIMD packing. Every eligible submission reaches these
+three HE additions.
 
 ## Components
 
@@ -58,17 +50,18 @@ contributes encrypted zero to all three counters.
 python/he_voting/openfhe_backend.py
                              Complete OpenFHE BFV implementation
 python/he_voting/api.py      FastAPI endpoints
-python/he_voting/service.py  Ordered processing, SQLite, receipts, hash chain
+python/he_voting/service.py  Eligibility, participation, tally updates, receipts
 scripts/generate_data.py     Roster and two-column vote generator
-scripts/setup_election.py    Key, encrypted flag, tally, and database setup
+scripts/setup_election.py    Key, encrypted tally, and database setup
 scripts/client.py            Encrypt and submit one vote
 scripts/submit_csv.py        Submit generated rows one at a time
 scripts/decrypt_result.py    Trustee-side aggregate-only decryption
-tests/                       Duplicate, API, concurrency, and privacy tests
+tests/                       Tally, API, concurrency, and privacy tests
 ```
 
-The HE context and evaluation keys are loaded once per Python process. Every
-row still receives three fresh randomized ciphertexts and is processed
+The HE context and public key are loaded once per Python process. Multiplication
+evaluation keys are unnecessary because tallying uses ciphertext addition only.
+Every row still receives three fresh randomized ciphertexts and is submitted
 synchronously.
 
 ## 1. Install OpenFHE Python
@@ -125,21 +118,23 @@ Verify the binding:
 ```
 
 Create a fresh election runtime after migrating. Do not continue an old runtime
-created with a different OpenFHE library/wrapper version.
+created with a different OpenFHE library/wrapper version or with the previous
+encrypted-flag design. The service rejects legacy flag runtimes to prevent old
+participants from being counted again.
 
-## 2. Generate the duplicate fixture
+## 2. Generate the test fixture
 
 ```bash
 .venv/bin/python \
   scripts/generate_data.py \
   --out-dir generated \
   --employees 16 \
-  --votes 4 \
-  --duplicates 1
+  --votes 4
 ```
 
-The vote CSV contains only `employee_id,choice`. The roster contains the local
-employee-to-token mapping and must stay on the client side.
+The vote CSV contains only `employee_id,choice`. The roster contains the
+restricted employee-to-token mapping used for setup, test submission, and the
+authorized participation report. It must not be exposed with public results.
 
 ## 3. Initialize an election
 
@@ -168,8 +163,8 @@ export HE_VOTING_RUNTIME="$PWD/runtime"
   --workers 1
 ```
 
-Exactly one API worker is required by this MVP so encrypted flag and tally
-updates remain ordered.
+Exactly one API worker is required by this MVP so participation claims and
+encrypted tally file updates remain ordered.
 
 ## 5. Submit rows one at a time
 
@@ -206,7 +201,7 @@ Or submit one vote:
 For the four-row fixture, the expected result is:
 
 ```json
-{"A": 1, "B": 1, "C": 1}
+{"A": 2, "B": 1, "C": 1}
 ```
 
 No flag or individual-ballot decryption command exists. The trustee decryption
@@ -227,28 +222,24 @@ The complete encrypted voting calculation is in:
 python/he_voting/openfhe_backend.py
 ```
 
-`OpenFHEBackend.evaluate()` performs one subtraction, three multiplications,
-and four additions. The service never decrypts a ballot, flag, or running
-tally.
+`OpenFHEBackend.evaluate()` performs exactly three ciphertext additions. The
+service never decrypts a ballot or running tally.
 
 ## Simple timing benchmark
 
-Generate the standard 100, 1,000, and 10,000-vote fixtures with 10% duplicates:
+Generate the standard 100, 1,000, and 10,000-vote fixtures:
 
 ```bash
 .venv/bin/python scripts/generate_benchmark_data.py \
-  --out-dir benchmark_data \
-  --duplicate-percent 10
+  --out-dir benchmark_data
 ```
-
-Use `--duplicate-percent 20` for 20% duplicates.
 
 The generated directories are:
 
 ```text
-benchmark_data/votes_100_dup10
-benchmark_data/votes_1000_dup10
-benchmark_data/votes_10000_dup10
+benchmark_data/votes_100
+benchmark_data/votes_1000
+benchmark_data/votes_10000
 ```
 
 Prepare a fresh local election for the quota being measured. Example for 100
@@ -256,7 +247,7 @@ votes:
 
 ```bash
 .venv/bin/python scripts/setup_election.py \
-  --roster benchmark_data/votes_100_dup10/roster.csv \
+  --roster benchmark_data/votes_100/roster.csv \
   --runtime-dir runtime_benchmark_100 \
   --trustee-dir trustee_benchmark_100
 ```
@@ -265,29 +256,50 @@ Then run the local sequential benchmark:
 
 ```bash
 .venv/bin/python scripts/benchmark_votes.py \
-  --votes benchmark_data/votes_100_dup10/votes.csv \
-  --roster benchmark_data/votes_100_dup10/roster.csv \
+  --votes benchmark_data/votes_100/votes.csv \
+  --roster benchmark_data/votes_100/roster.csv \
   --runtime-dir runtime_benchmark_100 \
-  --out-dir benchmark_results/100_dup10
+  --trustee-dir trustee_benchmark_100 \
+  --out-dir benchmark_results/100
 ```
 
 Change `100` to `1000` or `10000` for the larger cases, using a fresh runtime
 for each case.
 
-The benchmark writes:
+The benchmark writes a client-facing evidence bundle:
 
 ```text
-per_vote_times.csv   one row per separately encrypted and processed vote
-summary.json         total time, votes/second, average, median, and p95
+input_votes.csv              exact generated input
+per_vote_times.csv           per-row encryption/server/end-to-end timing
+vote_evidence.csv            input, one-hot encoding, status, ciphertext metadata
+participation.csv            employee submitted/not-submitted status, no choice
+ciphertexts/ballots/         three retained ciphertext files per submitted row
+ciphertexts/final_tally/     final encrypted A/B/C tally files
+expected_result.json         generated expected A/B/C totals
+decrypted_result.json        aggregate-only trustee output
+final_result.csv             expected vs decrypted totals and ciphertext previews
+checksums.sha256             integrity hashes for every retained ciphertext
+summary.json                 overall timing and result comparison
 ```
 
-Timing is split into fresh encryption, encrypted vote processing, and complete
-end-to-end time. The script waits for each row to finish before starting the
-next row. It does not start an HTTP server or process votes in the background.
+Quickly inspect the client evidence:
 
-The 10,000-vote case is intentionally heavy: each vote contains three BFV
-ciphertexts and each eligible employee has an encrypted flag. Reserve
-substantial disk space and run 100 then 1,000 first before starting 10,000.
+```bash
+sed -n '1,6p' benchmark_results/100/vote_evidence.csv
+sed -n '1,6p' benchmark_results/100/participation.csv
+sed -n '1,6p' benchmark_results/100/final_result.csv
+cd benchmark_results/100
+sha256sum -c checksums.sha256
+```
+
+Ciphertext previews are Base64 representations of the first 48 opaque binary
+bytes; they do not reveal a choice or count. Timing is split into fresh
+encryption, HE tally processing, and complete end-to-end time. The script waits
+for each row before starting the next row. It does not start an HTTP server or
+process votes in the background.
+
+Large runs still retain three BFV ciphertext files per submitted row. Run 100
+then 1,000 before a larger quota to estimate time and disk use.
 
 ## Current limitations
 
@@ -297,8 +309,9 @@ substantial disk space and run 100 then 1,000 first before starting 10,000.
   request; rows are never combined into an input array.
 - Each choice creates three separate scalar ciphertexts, and the server stores
   three separate scalar tally ciphertexts. No SIMD packing is used.
-- The ballot server can see repeated random voter tokens, but cannot map them to
-  employee IDs unless it also obtains the private local roster.
+- Participation is intentionally visible as token-hash ballot metadata. An
+  administrator with the roster can map participation to employees but still
+  cannot see their choices.
+- This simplified benchmark does not prevent repeated submissions.
 - The plaintext modulus is `65537`, so an election must stay below that count.
-- Each employee has a separate encrypted flag ciphertext; benchmark storage
-  before creating a very large real roster.
+- The benchmark stores three ciphertext files for every submitted row.

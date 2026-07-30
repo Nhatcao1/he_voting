@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import json
 import pickle
 import sys
 import types
@@ -9,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from client import VoteEncryptor, find_voter_token
+from benchmark_votes import main as benchmark_main
 from generate_data import generate
 from he_voting.openfhe_backend import OpenFHEBackend
 from he_voting.service import VotingService
@@ -57,20 +60,6 @@ class FakeContext:
     def KeyGen(self) -> FakeKeyPair:
         return FakeKeyPair()
 
-    def EvalMultKeyGen(self, secret_key: str) -> None:
-        pass
-
-    def SerializeEvalMultKey(self, path: str, serialization: Any) -> bool:
-        Path(path).write_bytes(b"fake-eval-key")
-        return True
-
-    def DeserializeEvalMultKey(
-        self,
-        path: str,
-        serialization: Any,
-    ) -> bool:
-        return Path(path).read_bytes() == b"fake-eval-key"
-
     def MakeCoefPackedPlaintext(self, values: list[int]) -> FakePlaintext:
         return FakePlaintext(values)
 
@@ -80,20 +69,6 @@ class FakeContext:
         plaintext: FakePlaintext,
     ) -> FakeCiphertext:
         return FakeCiphertext(plaintext.values[0], uuid.uuid4().hex)
-
-    def EvalSub(
-        self,
-        left: FakeCiphertext,
-        right: FakeCiphertext,
-    ) -> FakeCiphertext:
-        return FakeCiphertext(left.value - right.value, uuid.uuid4().hex)
-
-    def EvalMult(
-        self,
-        left: FakeCiphertext,
-        right: FakeCiphertext,
-    ) -> FakeCiphertext:
-        return FakeCiphertext(left.value * right.value, uuid.uuid4().hex)
 
     def EvalAdd(
         self,
@@ -150,21 +125,15 @@ def write_ballot(directory: Path, ciphertexts: dict[str, bytes]) -> None:
 def evaluate_vote(
     backend: OpenFHEBackend,
     runtime: Path,
-    token_hash: str,
     ballot_directory: Path,
     output_directory: Path,
 ) -> None:
     output_directory.mkdir()
     backend.evaluate(
         public_dir=runtime / "public",
-        flag_input=runtime / "flags" / f"{token_hash}.ct",
         tally_input_directory=runtime / "state",
         ballot_directory=ballot_directory,
-        flag_output=output_directory / "flag.ct",
         tally_output_directory=output_directory,
-    )
-    (output_directory / "flag.ct").replace(
-        runtime / "flags" / f"{token_hash}.ct"
     )
     for name in ("a", "b", "c"):
         (output_directory / f"tally_{name}.ct").replace(
@@ -172,53 +141,48 @@ def evaluate_vote(
         )
 
 
-def test_python_backend_preserves_encrypted_duplicate_logic(
+def test_python_backend_adds_each_encrypted_choice_to_tally(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
     monkeypatch.setitem(sys.modules, "openfhe", fake_openfhe_module())
     runtime = tmp_path / "runtime"
     trustee = tmp_path / "trustee"
-    token_hash = "a" * 64
-
     setup = OpenFHEBackend()
     setup.setup(runtime / "public", trustee, runtime / "state")
-    setup.initialize_flags([token_hash], runtime / "flags")
 
     encryptor = OpenFHEBackend(runtime / "public")
     first = encryptor.encrypt_choice("A")
-    duplicate = encryptor.encrypt_choice("B")
-    assert first != duplicate
+    second = encryptor.encrypt_choice("B")
+    assert first != second
 
     first_ballot = tmp_path / "first"
-    duplicate_ballot = tmp_path / "duplicate"
+    second_ballot = tmp_path / "second"
     write_ballot(first_ballot, first)
-    write_ballot(duplicate_ballot, duplicate)
+    write_ballot(second_ballot, second)
 
-    evaluator = OpenFHEBackend(
-        runtime / "public",
-        load_evaluation_keys=True,
-    )
+    evaluator = OpenFHEBackend(runtime / "public")
     evaluate_vote(
         evaluator,
         runtime,
-        token_hash,
         first_ballot,
         tmp_path / "first-output",
     )
     evaluate_vote(
         evaluator,
         runtime,
-        token_hash,
-        duplicate_ballot,
-        tmp_path / "duplicate-output",
+        second_ballot,
+        tmp_path / "second-output",
     )
 
     result = OpenFHEBackend(runtime / "public").decrypt_result(
         trustee_dir=trustee,
         tally_directory=runtime / "state",
     )
-    assert result == {"A": 1, "B": 0, "C": 0}
+    assert result == {"A": 1, "B": 1, "C": 0}
+    assert not (runtime / "flags").exists()
+    assert not (runtime / "public" / "eval_mult_keys.bin").exists()
+    assert not (runtime / "public" / "encrypted_one.ct").exists()
 
 
 def test_python_setup_client_and_service_contract(
@@ -231,9 +195,8 @@ def test_python_setup_client_and_service_contract(
     trustee = tmp_path / "trustee"
     expected = generate(
         output_directory=generated,
-        employee_count=3,
+        employee_count=4,
         vote_count=4,
-        duplicate_count=1,
         seed=7,
     )
     setup_election(
@@ -249,8 +212,9 @@ def test_python_setup_client_and_service_contract(
         ("100001", "A"),
         ("100002", "B"),
         ("100003", "C"),
-        ("100001", "B"),
+        ("100004", "A"),
     ]
+    statuses = []
     for employee_id, choice in vote_rows:
         token = find_voter_token(
             generated / "roster.csv",
@@ -260,10 +224,87 @@ def test_python_setup_client_and_service_contract(
             token,
             encryptor.encrypt_choice(choice),
         )
-        assert receipt.status == "recorded"
+        statuses.append(receipt.status)
 
+    assert statuses == ["accepted", "accepted", "accepted", "accepted"]
     result = OpenFHEBackend(runtime / "public").decrypt_result(
         trustee_dir=trustee,
         tally_directory=runtime / "state",
     )
-    assert result == expected == {"A": 1, "B": 1, "C": 1}
+    assert result == expected == {"A": 2, "B": 1, "C": 1}
+    assert len(service.participation_records()) == 4
+
+
+def test_benchmark_writes_client_evidence_bundle(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setitem(sys.modules, "openfhe", fake_openfhe_module())
+    generated = tmp_path / "generated"
+    runtime = tmp_path / "runtime"
+    trustee = tmp_path / "trustee"
+    output = tmp_path / "benchmark"
+    generate(
+        output_directory=generated,
+        employee_count=5,
+        vote_count=4,
+        seed=7,
+    )
+    setup_election(
+        roster_path=generated / "roster.csv",
+        runtime_dir=runtime,
+        trustee_dir=trustee,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_votes.py",
+            "--votes",
+            str(generated / "votes.csv"),
+            "--roster",
+            str(generated / "roster.csv"),
+            "--runtime-dir",
+            str(runtime),
+            "--trustee-dir",
+            str(trustee),
+            "--out-dir",
+            str(output),
+            "--progress-every",
+            "0",
+        ],
+    )
+
+    benchmark_main()
+
+    summary = json.loads((output / "summary.json").read_text())
+    assert summary["expected_result"] == {"A": 2, "B": 1, "C": 1}
+    assert summary["decrypted_result"] == {"A": 2, "B": 1, "C": 1}
+    assert summary["decrypted_total"] == 4
+    assert summary["participating_employees"] == 4
+    assert summary["result_matches_expected"] is True
+    with (output / "vote_evidence.csv").open(newline="") as evidence_file:
+        evidence = list(csv.DictReader(evidence_file))
+    assert [row["server_status"] for row in evidence] == [
+        "accepted",
+        "accepted",
+        "accepted",
+        "accepted",
+    ]
+    assert evidence[0]["input_choice"] == "A"
+    assert (
+        evidence[0]["encoded_a"],
+        evidence[0]["encoded_b"],
+        evidence[0]["encoded_c"],
+    ) == ("1", "0", "0")
+    assert len(list((output / "ciphertexts" / "ballots").rglob("*.ct"))) == 12
+    assert len(list((output / "ciphertexts" / "final_tally").glob("*.ct"))) == 3
+    with (output / "participation.csv").open(newline="") as participation_file:
+        participation = list(csv.DictReader(participation_file))
+    assert [row["submitted"] for row in participation] == [
+        "true",
+        "true",
+        "true",
+        "true",
+        "false",
+    ]

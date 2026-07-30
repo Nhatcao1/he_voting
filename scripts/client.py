@@ -81,7 +81,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Encrypt one A/B/C choice locally and submit it with the employee's "
-            "random voter token. The employee ID is never sent to the API."
+            "per-election voter token. The employee ID is never sent to the API."
         )
     )
     parser.add_argument("--employee-id", required=True)

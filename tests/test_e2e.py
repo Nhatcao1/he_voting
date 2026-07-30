@@ -27,12 +27,11 @@ def election(tmp_path: Path) -> dict[str, Path | Settings]:
     trustee = tmp_path / "trustee"
     expected = generate(
         output_directory=generated,
-        employee_count=3,
+        employee_count=4,
         vote_count=4,
-        duplicate_count=1,
         seed=7,
     )
-    assert expected == {"A": 1, "B": 1, "C": 1}
+    assert expected == {"A": 2, "B": 1, "C": 1}
 
     setup_election(
         roster_path=generated / "roster.csv",
@@ -64,11 +63,11 @@ def test_generated_vote_fixture_has_only_two_columns(
         {"employee_id": "100001", "choice": "A"},
         {"employee_id": "100002", "choice": "B"},
         {"employee_id": "100003", "choice": "C"},
-        {"employee_id": "100001", "choice": "B"},
+        {"employee_id": "100004", "choice": "A"},
     ]
 
 
-def test_encrypted_duplicate_is_not_counted(
+def test_every_generated_row_is_added_to_encrypted_tally(
     election: dict[str, Path | Settings],
 ) -> None:
     generated = election["generated"]
@@ -95,7 +94,12 @@ def test_encrypted_duplicate_is_not_counted(
         receipts.append(service.submit(token, ciphertext))
 
     assert [receipt.sequence for receipt in receipts] == [1, 2, 3, 4]
-    assert {receipt.status for receipt in receipts} == {"recorded"}
+    assert [receipt.status for receipt in receipts] == [
+        "accepted",
+        "accepted",
+        "accepted",
+        "accepted",
+    ]
     assert all(receipt.processing_ms > 0 for receipt in receipts)
     assert len(service.bulletin_board()) == 4
 
@@ -104,18 +108,21 @@ def test_encrypted_duplicate_is_not_counted(
         trustee_dir=trustee,
         tally_directory=runtime / "state",
     )
-    assert result == {"A": 1, "B": 1, "C": 1}
+    assert result == {"A": 2, "B": 1, "C": 1}
 
     assert not (runtime / "secret_key.bin").exists()
     assert not (runtime / "public" / "secret_key.bin").exists()
     assert (trustee / "secret_key.bin").is_file()
+    assert not (runtime / "flags").exists()
+    assert not (runtime / "public" / "eval_mult_keys.bin").exists()
+    assert not (runtime / "public" / "encrypted_one.ct").exists()
     assert all(
         len(list(ballot_directory.glob("choice_*.ct"))) == 3
         for ballot_directory in (runtime / "ballots").iterdir()
     )
 
 
-def test_api_accepts_ciphertext_and_returns_same_shape_for_duplicate(
+def test_api_accepts_each_encrypted_submission(
     election: dict[str, Path | Settings],
 ) -> None:
     generated = election["generated"]
@@ -153,8 +160,9 @@ def test_api_accepts_ciphertext_and_returns_same_shape_for_duplicate(
             responses.append(response.json())
 
         assert set(responses[0]) == set(responses[1])
-        assert responses[0]["status"] == "recorded"
-        assert responses[1]["status"] == "recorded"
+        assert responses[0]["status"] == "accepted"
+        assert responses[1]["status"] == "accepted"
+        assert responses[0]["receipt"] != responses[1]["receipt"]
         assert responses[0]["processing_ms"] > 0
         assert responses[1]["processing_ms"] > 0
         assert (
@@ -164,7 +172,7 @@ def test_api_accepts_ciphertext_and_returns_same_shape_for_duplicate(
         assert len(client.get("/election/bulletin-board").json()) == 2
 
 
-def test_concurrent_duplicate_requests_count_at_most_once(
+def test_concurrent_submissions_are_both_added(
     election: dict[str, Path | Settings],
 ) -> None:
     generated = election["generated"]
@@ -195,16 +203,16 @@ def test_concurrent_duplicate_requests_count_at_most_once(
             )
         )
     assert sorted(receipt.sequence for receipt in receipts) == [1, 2]
+    assert sorted(receipt.status for receipt in receipts) == [
+        "accepted",
+        "accepted",
+    ]
 
     result = OpenFHEBackend(runtime / "public").decrypt_result(
         trustee_dir=trustee,
         tally_directory=runtime / "state",
     )
-    assert sum(result.values()) == 1
-    assert result in (
-        {"A": 1, "B": 0, "C": 0},
-        {"A": 0, "B": 1, "C": 0},
-    )
+    assert result == {"A": 1, "B": 1, "C": 0}
 
 
 def test_same_choice_encrypts_to_different_ciphertexts(

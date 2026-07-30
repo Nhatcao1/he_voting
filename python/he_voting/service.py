@@ -33,17 +33,16 @@ class Receipt:
 class VotingService:
     """Ordered ballot processor.
 
-    The service never receives an employee ID or plaintext choice. A random
-    voter token is hashed to locate that voter's encrypted has_voted flag.
+    The service never receives an employee ID or plaintext choice. A
+    per-election voter token is hashed for eligibility and participation
+    reporting. Every eligible submission is added; only choices and running
+    tallies use HE.
     """
 
     def __init__(self, settings: Settings):
         settings.validate()
         self.settings = settings
-        self.crypto = OpenFHEBackend(
-            settings.public_dir,
-            load_evaluation_keys=True,
-        )
+        self.crypto = OpenFHEBackend(settings.public_dir)
         self._lock = threading.Lock()
 
         settings.ballots_dir.mkdir(parents=True, exist_ok=True)
@@ -105,6 +104,17 @@ class VotingService:
                     ADD COLUMN processing_ms REAL NOT NULL DEFAULT 0
                     """
                 )
+
+    @staticmethod
+    def _receipt_status(internal_status: str) -> str:
+        return {
+            "accepted": "accepted",
+            "rejected_unknown_token": "rejected",
+            # Compatibility with runtimes created by the older encrypted-flag
+            # implementation.
+            "evaluated": "accepted",
+            "ignored_unknown_token": "rejected",
+        }.get(internal_status, "recorded")
 
     @staticmethod
     def token_hash(voter_token: str) -> str:
@@ -185,27 +195,9 @@ class VotingService:
             ballot_digest.update(choice_name.encode("ascii"))
             ballot_digest.update(encrypted_choice[choice_name])
         ballot_hash = ballot_digest.hexdigest()
-        receipt_id = ballot_hash
 
         with self._lock:
             with self._connect() as connection:
-                existing = connection.execute(
-                    """
-                    SELECT receipt, sequence, chain_hash, processing_ms
-                    FROM ballots
-                    WHERE receipt = ?
-                    """,
-                    (receipt_id,),
-                ).fetchone()
-                if existing is not None:
-                    return Receipt(
-                        receipt=existing["receipt"],
-                        status="recorded",
-                        sequence=int(existing["sequence"]),
-                        chain_hash=existing["chain_hash"],
-                        processing_ms=float(existing["processing_ms"]),
-                    )
-
                 eligible = (
                     connection.execute(
                         """
@@ -219,6 +211,9 @@ class VotingService:
                 sequence, chain_hash = self._next_chain_values(
                     connection, ballot_hash
                 )
+                receipt_id = hashlib.sha256(
+                    f"{sequence}:{ballot_hash}".encode("ascii")
+                ).hexdigest()
                 ballot_directory = (
                     self.settings.ballots_dir
                     / f"{sequence:012d}-{receipt_id}"
@@ -232,13 +227,13 @@ class VotingService:
                     ballot_temp.write_bytes(encrypted_choice[choice_name])
                     os.replace(ballot_temp, ballot_path)
 
-                internal_status = "ignored_unknown_token"
+                submitted_at = datetime.now(timezone.utc).isoformat()
+                internal_status = "rejected_unknown_token"
                 if eligible:
                     self._apply_encrypted_vote(
-                        token_hash=token_hash,
                         ballot_directory=ballot_directory,
                     )
-                    internal_status = "evaluated"
+                    internal_status = "accepted"
 
                 processing_ms = (
                     time.perf_counter() - processing_started
@@ -271,7 +266,7 @@ class VotingService:
                         ),
                         internal_status,
                         processing_ms,
-                        datetime.now(timezone.utc).isoformat(),
+                        submitted_at,
                     ),
                 )
                 connection.execute(
@@ -285,7 +280,7 @@ class VotingService:
 
                 return Receipt(
                     receipt=receipt_id,
-                    status="recorded",
+                    status=self._receipt_status(internal_status),
                     sequence=sequence,
                     chain_hash=chain_hash,
                     processing_ms=processing_ms,
@@ -293,27 +288,17 @@ class VotingService:
 
     def _apply_encrypted_vote(
         self,
-        token_hash: str,
         ballot_directory: Path,
     ) -> None:
-        flag_path = self.settings.flags_dir / f"{token_hash}.ct"
-        if not flag_path.is_file():
-            raise FileNotFoundError(
-                "eligible token has no encrypted has_voted state"
-            )
-
         with tempfile.TemporaryDirectory(
             prefix="evaluate-",
             dir=self.settings.runtime_dir / "tmp",
         ) as temporary_directory:
             temporary = Path(temporary_directory)
-            next_flag = temporary / "flag.ct"
             next_tally_directory = temporary / "next_tally"
-            previous_flag = temporary / "flag.previous.ct"
             previous_tally_directory = temporary / "previous_tally"
             next_tally_directory.mkdir()
             previous_tally_directory.mkdir()
-            shutil.copy2(flag_path, previous_flag)
             for choice_name in CHOICE_NAMES:
                 shutil.copy2(
                     self.settings.state_dir / f"tally_{choice_name}.ct",
@@ -322,15 +307,12 @@ class VotingService:
 
             self.crypto.evaluate(
                 public_dir=self.settings.public_dir,
-                flag_input=flag_path,
                 tally_input_directory=self.settings.state_dir,
                 ballot_directory=ballot_directory,
-                flag_output=next_flag,
                 tally_output_directory=next_tally_directory,
             )
 
             try:
-                os.replace(next_flag, flag_path)
                 for choice_name in CHOICE_NAMES:
                     os.replace(
                         next_tally_directory / f"tally_{choice_name}.ct",
@@ -338,7 +320,6 @@ class VotingService:
                         / f"tally_{choice_name}.ct",
                     )
             except Exception:
-                os.replace(previous_flag, flag_path)
                 for choice_name in CHOICE_NAMES:
                     os.replace(
                         previous_tally_directory
@@ -352,7 +333,8 @@ class VotingService:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT receipt, sequence, chain_hash, processing_ms
+                SELECT receipt, sequence, chain_hash, processing_ms,
+                       internal_status
                 FROM ballots
                 WHERE receipt = ?
                 """,
@@ -362,11 +344,28 @@ class VotingService:
             return None
         return Receipt(
             receipt=row["receipt"],
-            status="recorded",
+            status=self._receipt_status(row["internal_status"]),
             sequence=int(row["sequence"]),
             chain_hash=row["chain_hash"],
             processing_ms=float(row["processing_ms"]),
         )
+
+    def participation_records(self) -> dict[str, str]:
+        """Return token-hash participation metadata without ballot choices."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT token_hash, MIN(created_at) AS submitted_at
+                FROM ballots
+                WHERE internal_status IN ('accepted', 'evaluated')
+                GROUP BY token_hash
+                ORDER BY submitted_at
+                """
+            ).fetchall()
+        return {
+            row["token_hash"]: row["submitted_at"]
+            for row in rows
+        }
 
     def bulletin_board(self) -> list[dict[str, object]]:
         with self._connect() as connection:

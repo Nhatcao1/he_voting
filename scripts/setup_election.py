@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import shutil
 import sys
@@ -57,23 +56,14 @@ def setup_election(
     trustee_dir.mkdir(parents=True, exist_ok=True)
     public_dir = runtime_dir / "public"
     state_dir = runtime_dir / "state"
-    flags_dir = runtime_dir / "flags"
     ballots_dir = runtime_dir / "ballots"
     ballots_dir.mkdir(parents=True, exist_ok=True)
 
     tokens = read_tokens(roster_path)
-    token_hashes = [
-        hashlib.sha256(token.encode("ascii")).hexdigest()
-        for token in tokens
-    ]
     crypto_parameters = crypto.setup(
         public_dir=public_dir,
         trustee_dir=trustee_dir,
         state_dir=state_dir,
-    )
-    crypto.initialize_flags(
-        token_hashes=token_hashes,
-        flags_dir=flags_dir,
     )
 
     settings = Settings(runtime_dir=runtime_dir)
@@ -81,7 +71,9 @@ def setup_election(
     service.register_tokens(tokens)
 
     manifest = {
+        "runtime_version": 3,
         "employee_count": len(tokens),
+        "participation_tracking": "ballot-metadata",
         "crypto": crypto_parameters,
     }
     (runtime_dir / "election.json").write_text(
@@ -93,7 +85,7 @@ def setup_election(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Initialize encrypted flags, tally, and API runtime."
+        description="Initialize encrypted tallies and the voting API runtime."
     )
     parser.add_argument("--roster", type=Path, required=True)
     parser.add_argument("--runtime-dir", type=Path, required=True)

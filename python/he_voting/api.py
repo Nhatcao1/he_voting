@@ -39,8 +39,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="HE Employee Voting API",
         version="0.1.0",
         description=(
-            "Accepts an anonymous voter token and an OpenFHE BFV encrypted "
-            "A/B/C choice. The has_voted flag and tally remain encrypted."
+            "Accepts a voter token and an OpenFHE BFV encrypted A/B/C choice. "
+            "Ballot metadata records participation; the choice and running "
+            "tally remain encrypted."
         ),
     )
     app.state.voting_service = service

@@ -5,7 +5,6 @@ import argparse
 import csv
 import hashlib
 import json
-import random
 from pathlib import Path
 
 
@@ -21,25 +20,18 @@ def generate(
     output_directory: Path,
     employee_count: int,
     vote_count: int,
-    duplicate_count: int,
     seed: int,
 ) -> dict[str, int]:
     if employee_count < 1:
         raise ValueError("employee_count must be positive")
     if vote_count < 1:
         raise ValueError("vote_count must be positive")
-    if duplicate_count < 0 or duplicate_count >= vote_count:
-        raise ValueError("duplicate_count must be between 0 and vote_count - 1")
-
-    unique_vote_count = vote_count - duplicate_count
-    if unique_vote_count > employee_count:
+    if vote_count > employee_count:
         raise ValueError(
-            "unique vote count cannot exceed the employee count; "
-            "increase --employees or --duplicates"
+            "vote count cannot exceed the employee count; increase --employees"
         )
 
     output_directory.mkdir(parents=True, exist_ok=True)
-    randomizer = random.Random(seed)
 
     roster: list[dict[str, str | int]] = []
     for index in range(employee_count):
@@ -52,27 +44,14 @@ def generate(
             }
         )
 
-    first_votes: list[dict[str, str]] = []
-    for index in range(unique_vote_count):
-        first_votes.append(
+    votes: list[dict[str, str]] = []
+    for index in range(vote_count):
+        votes.append(
             {
                 "employee_id": str(roster[index]["employee_id"]),
                 "choice": CHOICES[index % len(CHOICES)],
             }
         )
-
-    duplicate_votes: list[dict[str, str]] = []
-    for index in range(duplicate_count):
-        original = first_votes[index % len(first_votes)]
-        original_choice_index = CHOICES.index(original["choice"])
-        duplicate_votes.append(
-            {
-                "employee_id": original["employee_id"],
-                "choice": CHOICES[(original_choice_index + 1) % len(CHOICES)],
-            }
-        )
-    randomizer.shuffle(duplicate_votes)
-    votes = first_votes + duplicate_votes
 
     roster_path = output_directory / "roster.csv"
     with roster_path.open("w", encoding="utf-8", newline="") as output:
@@ -92,12 +71,8 @@ def generate(
         writer.writeheader()
         writer.writerows(votes)
 
-    seen: set[str] = set()
     expected = {"A": 0, "B": 0, "C": 0}
     for row in votes:
-        if row["employee_id"] in seen:
-            continue
-        seen.add(row["employee_id"])
         expected[row["choice"]] += 1
 
     (output_directory / "expected_result.json").write_text(
@@ -110,14 +85,12 @@ def generate(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate a local employee roster and a two-column A/B/C vote "
-            "fixture with deliberate duplicate employees."
+            "Generate a local employee roster and a two-column A/B/C vote fixture."
         )
     )
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--employees", type=int, default=16)
     parser.add_argument("--votes", type=int, default=4)
-    parser.add_argument("--duplicates", type=int, default=1)
     parser.add_argument("--seed", type=int, default=20260729)
     arguments = parser.parse_args()
 
@@ -125,7 +98,6 @@ def main() -> None:
         output_directory=arguments.out_dir.resolve(),
         employee_count=arguments.employees,
         vote_count=arguments.votes,
-        duplicate_count=arguments.duplicates,
         seed=arguments.seed,
     )
     print(
@@ -141,4 +113,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

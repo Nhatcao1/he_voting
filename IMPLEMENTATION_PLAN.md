@@ -1,237 +1,177 @@
-# Simple Encrypted Employee Voting — Implemented MVP
+# Simple Encrypted Employee Voting — Implemented Design
 
-## 1. External test data
+## 1. Test input
 
-The generated vote file contains only:
+The generated input stays human-readable:
 
 ```csv
 employee_id,choice
 100001,A
 100002,B
 100003,C
-100001,B
+100004,A
 ```
 
-The last row deliberately duplicates employee `100001`. Its B choice must not
-change the final tally.
+Every generated row uses a separate employee and is independently encrypted.
 
-The separate client-side roster contains:
+The client-side roster maps each test employee to a per-election voter token:
 
 ```text
 employee_id
 display_name
-random per-election voter_token
+voter_token
 ```
 
-The roster stays with the client. Names and employee IDs are never submitted to
-the ballot API.
+The employee ID and display name are not submitted to the voting API.
 
-## 2. Why the API uses a random token
+## 2. Participation and confidentiality
 
-The server needs a way to locate one employee's encrypted `has_voted` flag.
-Privately searching and updating thousands of encrypted employee IDs would
-require a much larger FHE database circuit.
-
-The client therefore converts its local employee ID to a random 256-bit
-per-election voter token. The ballot server stores only a hash of this token.
-It cannot map the hash or token back to an employee without obtaining the
-private client roster.
-
-This provides a practical lookup while keeping the employee ID out of the API.
-The server can recognize that the same random token was submitted again, but
-cannot see that token's employee or choice.
-
-## 3. Encrypted scalar values
-
-For every CSV row, the client creates three independent BFV scalar
-ciphertexts:
+The API hashes the submitted voter token. SQLite records:
 
 ```text
-Choice A -> choice_A = Enc(1), choice_B = Enc(0), choice_C = Enc(0)
-Choice B -> choice_A = Enc(0), choice_B = Enc(1), choice_C = Enc(0)
-Choice C -> choice_A = Enc(0), choice_B = Enc(0), choice_C = Enc(1)
+eligible_tokens(token_hash)
+ballots(token_hash, ciphertext_path, receipt, audit metadata)
 ```
 
-These are coefficient-encoded scalar ciphertexts. The implementation does not
-pack A, B, and C into SIMD slots.
+Participation is intentionally visible metadata. An authorized administrator
+with the roster can determine whether an employee submitted, but cannot
+determine the employee's choice. This simplified MVP does not enforce one
+submission per employee.
 
-For each eligible token, the server starts with a separately randomized flag:
+The security boundary is:
 
 ```text
-encrypted_has_voted = Enc(0)
+Employee participation       visible through token metadata
+Employee A/B/C choice        encrypted
+Running A/B/C totals         encrypted
+Final aggregate totals       decrypted by the trustee
 ```
 
-The three shared counters start as separate ciphertexts:
+## 3. Per-row choice encryption
+
+Every input row is handled separately. A choice becomes three scalar values:
 
 ```text
-encrypted_tally_A = Enc(0)
-encrypted_tally_B = Enc(0)
-encrypted_tally_C = Enc(0)
+A -> [1, 0, 0]
+B -> [0, 1, 0]
+C -> [0, 0, 1]
 ```
 
-## 4. Entire HE calculation
-
-For every request, without decrypting or branching on the flag:
+Each scalar is independently encrypted:
 
 ```text
-can_vote = Enc(1) - encrypted_has_voted
-
-accepted_A = can_vote * encrypted_choice_A
-accepted_B = can_vote * encrypted_choice_B
-accepted_C = can_vote * encrypted_choice_C
-
-new_tally_A = encrypted_tally_A + accepted_A
-new_tally_B = encrypted_tally_B + accepted_B
-new_tally_C = encrypted_tally_C + accepted_C
-
-new_flag = encrypted_has_voted + can_vote
+choice_a.ct
+choice_b.ct
+choice_c.ct
 ```
 
-First vote:
+The implementation does not use SIMD packing or combine multiple rows into one
+ciphertext. Re-encrypting the same value produces different randomized
+ciphertext bytes.
+
+## 4. Complete HE calculation
+
+Every eligible submission reaches the HE tally function:
 
 ```text
-can_vote = Enc(1) - Enc(0) = Enc(1)
+new_tally_A = encrypted_tally_A + encrypted_choice_A
+new_tally_B = encrypted_tally_B + encrypted_choice_B
+new_tally_C = encrypted_tally_C + encrypted_choice_C
 ```
 
-Duplicate:
+These are three OpenFHE `EvalAdd` operations. There is no encrypted flag,
+subtraction, ciphertext multiplication, or multiplication evaluation key.
+
+The only production decryption operation reads:
 
 ```text
-can_vote = Enc(1) - Enc(1) = Enc(0)
+tally_a.ct
+tally_b.ct
+tally_c.ct
 ```
 
-The API runs the same ciphertext operations and returns the same receipt shape
-for first and duplicate submissions.
+It cannot accept an individual ballot directory.
 
-## 5. Expected duplicate fixture
+## 5. Four-row example
 
-| Row | Local employee | Choice | Effect |
-|---:|---:|:---:|:---|
-| 1 | 100001 | A | A + 1 |
-| 2 | 100002 | B | B + 1 |
-| 3 | 100003 | C | C + 1 |
-| 4 | 100001 | B | No change |
+| Row | Employee | Choice | Server status | Encrypted tally effect |
+|---:|---:|:---:|:---|:---|
+| 1 | 100001 | A | accepted | A + 1 |
+| 2 | 100002 | B | accepted | B + 1 |
+| 3 | 100003 | C | accepted | C + 1 |
+| 4 | 100004 | A | accepted | A + 1 |
 
-Only the aggregate is normally decrypted:
+The final aggregate is:
 
 ```json
-{"A": 1, "B": 1, "C": 1}
+{"A": 2, "B": 1, "C": 1}
 ```
 
-No flag or individual-ballot decryption command exists. Only the three final
-aggregate counters can be passed to the trustee result-decryption operation.
+## 6. Components
 
-## 6. Implemented technologies
-
-| Part | Technology |
+| Component | Responsibility |
 |---|---|
-| Application and clients | Python |
-| HE scheme | OpenFHE BFV-RNS |
-| HE integration | Official `openfhe` Python bindings |
-| Web API | FastAPI |
-| Ordered state and audit metadata | SQLite |
-| Transport in deployment | HTTPS |
-| Secret key location | Separate trustee directory |
+| `python/he_voting/openfhe_backend.py` | BFV setup, row encryption, three additions, aggregate decryption |
+| `python/he_voting/service.py` | Eligibility, participation, ordered tally updates, receipts |
+| `python/he_voting/api.py` | FastAPI transport |
+| `scripts/generate_data.py` | Test roster, rows, and expected result |
+| `scripts/setup_election.py` | Keys, encrypted zero tallies, SQLite runtime |
+| `scripts/client.py` | Encrypt and submit one row |
+| `scripts/benchmark_votes.py` | Sequential timing and client evidence bundle |
+| `scripts/decrypt_result.py` | Trustee-side aggregate-only decryption |
 
-The BFV parameters use exact integer arithmetic, a plaintext modulus of `65537`,
-and OpenFHE's 128-bit classical security setting.
+## 7. Client evidence bundle
 
-## 7. Persistent Python backend
-
-The complete HE calculation is implemented by:
+The benchmark produces:
 
 ```text
-OpenFHEBackend.evaluate(
-    encrypted_choice_A,
-    encrypted_choice_B,
-    encrypted_choice_C,
-    encrypted_has_voted,
-    encrypted_tally_A,
-    encrypted_tally_B,
-    encrypted_tally_C,
-    encrypted_one
-)
+input_votes.csv
+per_vote_times.csv
+vote_evidence.csv
+participation.csv
+expected_result.json
+decrypted_result.json
+final_result.csv
+checksums.sha256
+ciphertexts/
+├── ballots/
+│   └── row_000001/
+│       ├── choice_a.ct
+│       ├── choice_b.ct
+│       └── choice_c.ct
+└── final_tally/
+    ├── tally_a.ct
+    ├── tally_b.ct
+    └── tally_c.ct
 ```
 
-The official bindings execute OpenFHE's compiled C++ implementation underneath
-Python. The context, public key, and multiplication evaluation keys remain
-loaded for the lifetime of the Python process. Every row is still freshly
-encrypted and evaluated separately.
+`vote_evidence.csv` shows each test input, its one-hot encoding, server status,
+ciphertext filename, byte size, SHA-256 hash, and a short Base64 preview. The
+preview is opaque serialized ciphertext data and does not reveal the underlying
+scalar.
 
-## 8. Implemented API
+`participation.csv` maps the restricted test roster to submitted/not-submitted
+metadata without including any choice.
 
-| Route | Purpose |
-|---|---|
-| `GET /health` | Service and backend status |
-| `GET /election/public-material` | BFV context and public key |
-| `POST /election/vote` | Random voter token plus three scalar A/B/C ciphertexts |
-| `GET /election/receipt/{id}` | Receipt inclusion check |
-| `GET /election/bulletin-board` | Ordered ballot hashes and hash chain |
-| `GET /election/encrypted-result` | Three separate encrypted scalar totals |
-| `GET /election/result` | Trustee-published aggregate |
+`final_result.csv` compares the generator's expected counts with the trustee's
+decrypted aggregate and identifies the encrypted tally file behind each result.
 
-The API has no decryption endpoint.
+## 8. Concurrency and scale
 
-## 9. Processing order
+One API worker plus an in-process lock serializes encrypted tally file
+replacement. Concurrent eligible submissions are processed one at a time and
+are all added.
 
-```text
-receive token and encrypted choice
-        |
-        v
-hash token and locate encrypted flag
-        |
-        v
-run the four HE operations
-        |
-        v
-replace encrypted flag and tally
-        |
-        v
-append ballot hash and chain hash
-        |
-        v
-return receipt
-```
+The plaintext modulus is `65537`, so accepted vote counts must remain below that
+limit. Disk usage grows mainly because every submitted row retains three
+ciphertext files.
 
-The MVP runs exactly one API worker and also uses an in-process lock. Concurrent
-duplicate requests are serialized so at most one contributes to the tally.
+## 9. Current limitations
 
-## 10. Implemented verification
-
-Automated tests verify:
-
-1. The vote CSV has only `employee_id,choice`.
-2. Each CSV row is encrypted and submitted separately.
-3. Each choice produces three scalar ciphertexts with fresh randomness.
-4. Re-encrypting the same choice produces different ciphertext bytes.
-5. A first vote increments exactly one encrypted counter.
-6. A duplicate changes no counter.
-7. Two concurrent duplicate submissions count at most once.
-8. API responses have the same shape for first and duplicate submissions.
-9. The API runtime contains no secret key.
-10. No flag or individual-ballot decryption operation is available.
-11. The trustee decrypts only the final A, B, and C aggregate ciphertexts.
-
-## 11. Scaling notes
-
-The generator accepts thousands of rows without changing the CSV schema.
-Each request is still independently encrypted and sent to the API.
-
-Current limits:
-
-- the plaintext modulus limits the total count to below `65537`;
-- every eligible employee currently has a separate BFV flag ciphertext;
-- every row serializes three ballot ciphertexts for durable evidence;
-- SQLite and one API worker favor correctness over throughput.
-
-Before a very large deployment, benchmark ciphertext storage. PostgreSQL can
-replace SQLite without changing the HE calculation.
-
-## 12. Security limitations
-
-- The first version has one trustee secret key, not threshold key shares.
-- The supplied client is trusted to encrypt only A, B, or C.
-- The server sees repeated random voter tokens, though not employee IDs.
-- A malicious client that steals another employee's private token can vote with
-  it; secure token distribution is outside this MVP.
-- Receipts and a hash chain make stored changes detectable, but do not prevent
-  the server from refusing a request before issuing a receipt.
+- The MVP uses one trustee secret key rather than threshold shares.
+- The supplied client is trusted to encode exactly one of A, B, or C.
+- The test generator creates a roster that can link employees to participation.
+- Repeated submissions are not prevented in this simplified benchmark.
+- A stolen voter token can be used by another party.
+- Receipts and the hash chain provide audit evidence but do not force the
+  server to accept a request.

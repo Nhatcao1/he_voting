@@ -86,5 +86,6 @@ Threshold decrypt aggregate only
         ↓
 Publish and independently verify final totals
 
-Kế hoạch kỹ thuật chi tiết cho phiên bản nhân viên chọn A/B/C và cơ chế chống bỏ phiếu hai lần
-bằng trạng thái mã hóa nằm trong `IMPLEMENTATION_PLAN.md`.
+Phiên bản MVP theo dõi việc đã gửi phiếu bằng `token_hash` duy nhất trong
+SQLite. Nội dung lựa chọn và tổng A/B/C vẫn được mã hóa; chỉ tổng cuối cùng được
+giải mã. Thiết kế triển khai nằm trong `IMPLEMENTATION_PLAN.md`.
