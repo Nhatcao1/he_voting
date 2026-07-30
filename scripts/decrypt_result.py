@@ -35,7 +35,7 @@ def main() -> None:
     result = CryptoCli(arguments.crypto_bin.resolve()).decrypt_result(
         public_dir=runtime_dir / "public",
         trustee_dir=arguments.trustee_dir.resolve(),
-        tally=runtime_dir / "state" / "tally.ct",
+        tally_directory=runtime_dir / "state",
     )
     if arguments.publish:
         (runtime_dir / "published_result.json").write_text(
@@ -47,4 +47,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

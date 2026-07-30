@@ -23,7 +23,7 @@ to a random per-election voter token. The API receives:
 
 ```text
 random voter token
-encrypted [A, B, C] choice
+three separate encrypted scalar choice bits: A, B, C
 ```
 
 The random token lets the server locate one encrypted `has_voted` ciphertext
@@ -34,14 +34,23 @@ choice, flag, or tally.
 The OpenFHE computation is:
 
 ```text
-can_vote      = Enc([1,1,1]) - encrypted_has_voted
-accepted_vote = can_vote * encrypted_choice
-new_tally     = encrypted_tally + accepted_vote
-new_flag      = encrypted_has_voted + can_vote
+can_vote = Enc(1) - encrypted_has_voted
+
+accepted_A = can_vote * encrypted_choice_A
+accepted_B = can_vote * encrypted_choice_B
+accepted_C = can_vote * encrypted_choice_C
+
+new_tally_A = encrypted_tally_A + accepted_A
+new_tally_B = encrypted_tally_B + accepted_B
+new_tally_C = encrypted_tally_C + accepted_C
+
+new_flag = encrypted_has_voted + can_vote
 ```
 
-The first request changes the encrypted flag from `[0,0,0]` to `[1,1,1]`.
-Every duplicate therefore contributes `[0,0,0]`.
+All seven values above are separate BFV coefficient-encoded scalar
+ciphertexts. No choice or tally uses SIMD packing. The first request changes
+the encrypted flag from `Enc(0)` to `Enc(1)`. Every duplicate therefore
+contributes encrypted zero to all three counters.
 
 ## Components
 
@@ -59,31 +68,31 @@ tests/                       Duplicate, API, concurrency, and privacy tests
 
 ## 1. Build OpenFHE evaluator
 
-From the Viettel workspace:
+From the cloned repository root:
 
 ```bash
 cmake \
-  -S he_voting_count \
-  -B he_voting_count/build \
-  -DOpenFHE_DIR="$PWD/openfhe-install/lib/OpenFHE" \
+  -S . \
+  -B build \
+  -DOpenFHE_DIR=/usr/local/lib/OpenFHE \
   -DCMAKE_BUILD_TYPE=Release
 
-cmake --build he_voting_count/build --parallel 2
+cmake --build build --parallel 2
 ```
 
 ## 2. Create Python environment
 
 ```bash
-python3 -m venv he_voting_count/.venv
-he_voting_count/.venv/bin/pip install -r he_voting_count/requirements.txt
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
 
 ## 3. Generate the duplicate fixture
 
 ```bash
-he_voting_count/.venv/bin/python \
-  he_voting_count/scripts/generate_data.py \
-  --out-dir he_voting_count/generated \
+.venv/bin/python \
+  scripts/generate_data.py \
+  --out-dir generated \
   --employees 16 \
   --votes 4 \
   --duplicates 1
@@ -95,13 +104,12 @@ employee-to-token mapping and must stay on the client side.
 ## 4. Initialize an election
 
 ```bash
-PYTHONPATH=he_voting_count/python \
-he_voting_count/.venv/bin/python \
-  he_voting_count/scripts/setup_election.py \
-  --roster he_voting_count/generated/roster.csv \
-  --runtime-dir he_voting_count/runtime \
-  --trustee-dir he_voting_count/runtime_trustee \
-  --crypto-bin he_voting_count/build/he_voting_crypto
+.venv/bin/python \
+  scripts/setup_election.py \
+  --roster generated/roster.csv \
+  --runtime-dir runtime \
+  --trustee-dir runtime_trustee \
+  --crypto-bin build/he_voting_crypto
 ```
 
 The API runtime does not contain the secret key. It is written only to
@@ -110,12 +118,12 @@ The API runtime does not contain the secret key. It is written only to
 ## 5. Run the API
 
 ```bash
-export PYTHONPATH="$PWD/he_voting_count/python"
-export HE_VOTING_RUNTIME="$PWD/he_voting_count/runtime"
-export HE_VOTING_CRYPTO_BIN="$PWD/he_voting_count/build/he_voting_crypto"
+export PYTHONPATH="$PWD/python"
+export HE_VOTING_RUNTIME="$PWD/runtime"
+export HE_VOTING_CRYPTO_BIN="$PWD/build/he_voting_crypto"
 export HE_EVALUATOR="openfhe"
 
-he_voting_count/.venv/bin/uvicorn \
+.venv/bin/uvicorn \
   he_voting.api:create_app \
   --factory \
   --host 127.0.0.1 \
@@ -129,35 +137,35 @@ updates remain ordered.
 ## 6. Submit rows one at a time
 
 ```bash
-he_voting_count/.venv/bin/python \
-  he_voting_count/scripts/submit_csv.py \
-  --votes he_voting_count/generated/votes.csv \
-  --roster he_voting_count/generated/roster.csv \
-  --public-dir he_voting_count/runtime/public \
-  --crypto-bin he_voting_count/build/he_voting_crypto \
+.venv/bin/python \
+  scripts/submit_csv.py \
+  --votes generated/votes.csv \
+  --roster generated/roster.csv \
+  --public-dir runtime/public \
+  --crypto-bin build/he_voting_crypto \
   --api-url http://127.0.0.1:8000
 ```
 
 Or submit one vote:
 
 ```bash
-he_voting_count/.venv/bin/python \
-  he_voting_count/scripts/client.py \
+.venv/bin/python \
+  scripts/client.py \
   --employee-id 100001 \
   --choice A \
-  --roster he_voting_count/generated/roster.csv \
-  --public-dir he_voting_count/runtime/public \
-  --crypto-bin he_voting_count/build/he_voting_crypto
+  --roster generated/roster.csv \
+  --public-dir runtime/public \
+  --crypto-bin build/he_voting_crypto
 ```
 
 ## 7. Trustee decrypts only the total
 
 ```bash
-he_voting_count/.venv/bin/python \
-  he_voting_count/scripts/decrypt_result.py \
-  --runtime-dir he_voting_count/runtime \
-  --trustee-dir he_voting_count/runtime_trustee \
-  --crypto-bin he_voting_count/build/he_voting_crypto \
+.venv/bin/python \
+  scripts/decrypt_result.py \
+  --runtime-dir runtime \
+  --trustee-dir runtime_trustee \
+  --crypto-bin build/he_voting_crypto \
   --publish
 ```
 
@@ -167,13 +175,14 @@ For the four-row fixture, the expected result is:
 {"A": 1, "B": 1, "C": 1}
 ```
 
-The debug-only native `decrypt-flag` command exists for automated testing. It
-is not exposed by the API.
+No flag or individual-ballot decryption command exists. The native decryption
+command accepts only the directory containing the final A, B, and C aggregate
+ciphertexts.
 
 ## 8. Run tests
 
 ```bash
-he_voting_count/.venv/bin/pytest he_voting_count
+.venv/bin/pytest
 ```
 
 ## HEIR option
@@ -188,9 +197,12 @@ keys, serialization, and execution.
 
 - The MVP uses one trustee secret key, not threshold key shares yet.
 - The supplied client is trusted to encrypt only A, B, or C.
+- Every CSV row is independently encrypted and submitted as its own API
+  request; rows are never combined into an input array.
+- Each choice creates three separate scalar ciphertexts, and the server stores
+  three separate scalar tally ciphertexts. No SIMD packing is used.
 - The ballot server can see repeated random voter tokens, but cannot map them to
   employee IDs unless it also obtains the private local roster.
 - The plaintext modulus is `65537`, so an election must stay below that count.
 - Each employee has a separate encrypted flag ciphertext; benchmark storage
   before creating a very large real roster.
-

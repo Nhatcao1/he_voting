@@ -73,33 +73,33 @@ class CryptoCli:
         self,
         public_dir: Path,
         choice: str,
-        output: Path,
+        output_directory: Path,
     ) -> dict[str, Any]:
         return self._run(
             "encrypt-choice",
             public_dir=public_dir,
             choice=choice,
-            out=output,
+            out_dir=output_directory,
         )
 
     def evaluate(
         self,
         public_dir: Path,
         flag_input: Path,
-        tally_input: Path,
-        ballot_input: Path,
+        tally_input_directory: Path,
+        ballot_directory: Path,
         flag_output: Path,
-        tally_output: Path,
+        tally_output_directory: Path,
         evaluator: str,
     ) -> dict[str, Any]:
         return self._run(
             "evaluate",
             public_dir=public_dir,
             flag_in=flag_input,
-            tally_in=tally_input,
-            ballot_in=ballot_input,
+            tally_dir_in=tally_input_directory,
+            ballot_dir=ballot_directory,
             flag_out=flag_output,
-            tally_out=tally_output,
+            tally_dir_out=tally_output_directory,
             evaluator=evaluator,
         )
 
@@ -107,27 +107,12 @@ class CryptoCli:
         self,
         public_dir: Path,
         trustee_dir: Path,
-        tally: Path,
+        tally_directory: Path,
     ) -> dict[str, int]:
         result = self._run(
             "decrypt-result",
             public_dir=public_dir,
             trustee_dir=trustee_dir,
-            tally=tally,
+            tally_dir=tally_directory,
         )
         return {choice: int(result[choice]) for choice in ("A", "B", "C")}
-
-    def decrypt_flag(
-        self,
-        public_dir: Path,
-        trustee_dir: Path,
-        flag: Path,
-    ) -> int:
-        result = self._run(
-            "decrypt-flag",
-            public_dir=public_dir,
-            trustee_dir=trustee_dir,
-            flag=flag,
-        )
-        return int(result["has_voted"])
-

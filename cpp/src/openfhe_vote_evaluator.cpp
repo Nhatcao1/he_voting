@@ -13,22 +13,28 @@ class OpenFheVoteEvaluator final : public VoteEvaluator {
 
     EncryptedVoteState evaluate(
         const CryptoContext<DCRTPoly>& context,
-        const Ciphertext<DCRTPoly>& encryptedChoice,
+        const EncryptedChoice& encryptedChoice,
         const EncryptedVoteState& currentState,
         const Ciphertext<DCRTPoly>& encryptedOne) const override {
         // All values stay encrypted:
         // can_vote      = 1 - has_voted
-        // accepted_vote = can_vote * [choice_A, choice_B, choice_C]
-        // next_tally    = tally + accepted_vote
+        // accepted_A    = can_vote * choice_A
+        // accepted_B    = can_vote * choice_B
+        // accepted_C    = can_vote * choice_C
+        // next_tally_X  = tally_X + accepted_X
         // next_flag     = has_voted + can_vote
         //
-        // next_flag is Enc([1,1,1]) after the first request for a token and
-        // remains Enc([1,1,1]) for every duplicate request.
+        // Every operand is a separate scalar ciphertext. No SIMD packing is
+        // used for the choice, flag, or counters.
         const auto canVote = context->EvalSub(encryptedOne, currentState.hasVoted);
-        const auto acceptedVote = context->EvalMult(canVote, encryptedChoice);
+        const auto acceptedA = context->EvalMult(canVote, encryptedChoice.choiceA);
+        const auto acceptedB = context->EvalMult(canVote, encryptedChoice.choiceB);
+        const auto acceptedC = context->EvalMult(canVote, encryptedChoice.choiceC);
 
         EncryptedVoteState nextState;
-        nextState.tally = context->EvalAdd(currentState.tally, acceptedVote);
+        nextState.tallyA = context->EvalAdd(currentState.tallyA, acceptedA);
+        nextState.tallyB = context->EvalAdd(currentState.tallyB, acceptedB);
+        nextState.tallyC = context->EvalAdd(currentState.tallyC, acceptedC);
         nextState.hasVoted = context->EvalAdd(currentState.hasVoted, canVote);
         return nextState;
     }
@@ -49,4 +55,3 @@ std::unique_ptr<VoteEvaluator> createVoteEvaluator(const std::string& name) {
 }
 
 }  // namespace he_voting
-

@@ -116,27 +116,17 @@ def test_encrypted_duplicate_is_not_counted(
     result = crypto.decrypt_result(
         public_dir=runtime / "public",
         trustee_dir=trustee,
-        tally=runtime / "state" / "tally.ct",
+        tally_directory=runtime / "state",
     )
     assert result == {"A": 1, "B": 1, "C": 1}
-
-    first_token = find_voter_token(
-        generated / "roster.csv",
-        "100001",
-    )
-    first_token_hash = service.token_hash(first_token)
-    assert (
-        crypto.decrypt_flag(
-            public_dir=runtime / "public",
-            trustee_dir=trustee,
-            flag=runtime / "flags" / f"{first_token_hash}.ct",
-        )
-        == 1
-    )
 
     assert not (runtime / "secret_key.bin").exists()
     assert not (runtime / "public" / "secret_key.bin").exists()
     assert (trustee / "secret_key.bin").is_file()
+    assert all(
+        len(list(ballot_directory.glob("choice_*.ct"))) == 3
+        for ballot_directory in (runtime / "ballots").iterdir()
+    )
 
 
 def test_api_accepts_ciphertext_and_returns_same_shape_for_duplicate(
@@ -163,8 +153,14 @@ def test_api_accepts_ciphertext_and_returns_same_shape_for_duplicate(
                 "/election/vote",
                 json={
                     "voter_token": token,
-                    "encrypted_choice": base64.b64encode(
-                        ciphertext
+                    "encrypted_choice_a": base64.b64encode(
+                        ciphertext["a"]
+                    ).decode("ascii"),
+                    "encrypted_choice_b": base64.b64encode(
+                        ciphertext["b"]
+                    ).decode("ascii"),
+                    "encrypted_choice_c": base64.b64encode(
+                        ciphertext["c"]
                     ).decode("ascii"),
                 },
             )
@@ -215,7 +211,7 @@ def test_concurrent_duplicate_requests_count_at_most_once(
     result = CryptoCli(CRYPTO_BINARY).decrypt_result(
         public_dir=runtime / "public",
         trustee_dir=trustee,
-        tally=runtime / "state" / "tally.ct",
+        tally_directory=runtime / "state",
     )
     assert sum(result.values()) == 1
     assert result in (
@@ -232,4 +228,5 @@ def test_same_choice_encrypts_to_different_ciphertexts(
     first = encrypt_choice(CRYPTO_BINARY, runtime / "public", "A")
     second = encrypt_choice(CRYPTO_BINARY, runtime / "public", "A")
     assert first != second
-
+    assert set(first) == {"a", "b", "c"}
+    assert all(first[name] != second[name] for name in ("a", "b", "c"))

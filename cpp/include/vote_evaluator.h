@@ -13,7 +13,15 @@ using lbcrypto::DCRTPoly;
 
 struct EncryptedVoteState {
     Ciphertext<DCRTPoly> hasVoted;
-    Ciphertext<DCRTPoly> tally;
+    Ciphertext<DCRTPoly> tallyA;
+    Ciphertext<DCRTPoly> tallyB;
+    Ciphertext<DCRTPoly> tallyC;
+};
+
+struct EncryptedChoice {
+    Ciphertext<DCRTPoly> choiceA;
+    Ciphertext<DCRTPoly> choiceB;
+    Ciphertext<DCRTPoly> choiceC;
 };
 
 class VoteEvaluator {
@@ -24,7 +32,7 @@ class VoteEvaluator {
 
     virtual EncryptedVoteState evaluate(
         const CryptoContext<DCRTPoly>& context,
-        const Ciphertext<DCRTPoly>& encryptedChoice,
+        const EncryptedChoice& encryptedChoice,
         const EncryptedVoteState& currentState,
         const Ciphertext<DCRTPoly>& encryptedOne) const = 0;
 };
@@ -32,4 +40,3 @@ class VoteEvaluator {
 std::unique_ptr<VoteEvaluator> createVoteEvaluator(const std::string& name);
 
 }  // namespace he_voting
-

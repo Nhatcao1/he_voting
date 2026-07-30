@@ -10,11 +10,12 @@ Mỗi phiếu được mã hóa tại thiết bị của người bỏ phiếu. 
 
 Ví dụ có 3 ứng viên:
 
-Ứng viên A → [1, 0, 0]
-Ứng viên B → [0, 1, 0]
-Ứng viên C → [0, 0, 1]
+Ứng viên A → Enc(1), Enc(0), Enc(0)
+Ứng viên B → Enc(0), Enc(1), Enc(0)
+Ứng viên C → Enc(0), Enc(0), Enc(1)
 
-Mỗi vector được mã hóa bằng public key của cuộc bỏ phiếu.
+Mỗi lựa chọn tạo ba scalar ciphertext riêng biệt bằng public key chung của
+cuộc bỏ phiếu. Phiên bản hiện tại không SIMD-pack A, B và C.
 
 3. Luồng xử lý đơn giản
 
@@ -28,14 +29,13 @@ flowchart LR
 
 4. Ví dụ kiểm phiếu
 
-Phiếu 1: A → [1, 0, 0]
-Phiếu 2: C → [0, 0, 1]
-Phiếu 3: A → [1, 0, 0]
+Phiếu 1: A → Enc(1), Enc(0), Enc(0)
+Phiếu 2: C → Enc(0), Enc(0), Enc(1)
+Phiếu 3: A → Enc(1), Enc(0), Enc(0)
 
-Enc([1,0,0])
-+ Enc([0,0,1])
-+ Enc([1,0,0])
-= Enc([2,0,1])
+Tally A: Enc(0) + Enc(1) + Enc(0) + Enc(1) = Enc(2)
+Tally B: Enc(0) + Enc(0) + Enc(0) + Enc(0) = Enc(0)
+Tally C: Enc(0) + Enc(0) + Enc(1) + Enc(0) = Enc(1)
 
 Sau khi giải mã kết quả tổng:
 
@@ -67,7 +67,8 @@ Cơ chế công khai kiểm chứng kết quả.
 
 Paillier cho phép cộng đồng cấu đơn giản.
 
-BFV hoặc BGV cho phép tính toán số nguyên và SIMD packing.
+BFV hoặc BGV cho phép tính toán số nguyên chính xác. MVP dùng BFV scalar
+ciphertext riêng cho A, B và C, không dùng SIMD packing.
 
 Threshold Paillier hoặc threshold BFV/BGV phù hợp khi nhiều bên cùng giữ quyền giải mã.
 

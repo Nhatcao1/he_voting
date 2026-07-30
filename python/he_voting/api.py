@@ -14,7 +14,9 @@ from .settings import Settings
 
 class VoteRequest(BaseModel):
     voter_token: str = Field(min_length=64, max_length=64)
-    encrypted_choice: str = Field(min_length=1)
+    encrypted_choice_a: str = Field(min_length=1)
+    encrypted_choice_b: str = Field(min_length=1)
+    encrypted_choice_c: str = Field(min_length=1)
 
 
 class VoteReceiptResponse(BaseModel):
@@ -68,10 +70,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     def submit_vote(request: VoteRequest) -> VoteReceiptResponse:
         try:
-            encrypted_choice = base64.b64decode(
-                request.encrypted_choice,
-                validate=True,
-            )
+            encrypted_choice = {
+                "a": base64.b64decode(
+                    request.encrypted_choice_a,
+                    validate=True,
+                ),
+                "b": base64.b64decode(
+                    request.encrypted_choice_b,
+                    validate=True,
+                ),
+                "c": base64.b64decode(
+                    request.encrypted_choice_c,
+                    validate=True,
+                ),
+            }
             receipt = service.submit(
                 request.voter_token,
                 encrypted_choice,
@@ -101,11 +113,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return service.bulletin_board()
 
     @app.get("/election/encrypted-result")
-    def encrypted_result() -> dict[str, str]:
-        tally_path = active_settings.state_dir / "tally.ct"
+    def encrypted_result() -> dict[str, object]:
         return {
             "scheme": "BFV-RNS",
-            "encrypted_tally": _base64_file(tally_path),
+            "encoding": "coefficient-scalar",
+            "encrypted_tally": {
+                choice.upper(): _base64_file(
+                    active_settings.state_dir / f"tally_{choice}.ct"
+                )
+                for choice in ("a", "b", "c")
+            },
         }
 
     @app.get("/election/result")

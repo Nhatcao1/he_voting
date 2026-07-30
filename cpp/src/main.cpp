@@ -23,7 +23,6 @@ using namespace lbcrypto;
 namespace {
 
 constexpr uint64_t kPlaintextModulus = 65537;
-constexpr uint32_t kPackedSlots = 4;
 
 struct Arguments {
     std::string command;
@@ -114,28 +113,25 @@ void loadEvaluationKeys(
     }
 }
 
-Ciphertext<DCRTPoly> encryptVector(
+Ciphertext<DCRTPoly> encryptScalar(
     const CryptoContext<DCRTPoly>& context,
     const PublicKey<DCRTPoly>& publicKey,
-    const std::vector<int64_t>& values) {
-    const auto plaintext = context->MakePackedPlaintext(values);
+    int64_t value) {
+    const auto plaintext = context->MakeCoefPackedPlaintext({value});
     return context->Encrypt(publicKey, plaintext);
 }
 
-std::vector<int64_t> decryptVector(
+int64_t decryptScalar(
     const CryptoContext<DCRTPoly>& context,
     const PrivateKey<DCRTPoly>& secretKey,
-    const Ciphertext<DCRTPoly>& ciphertext,
-    size_t length) {
+    const Ciphertext<DCRTPoly>& ciphertext) {
     Plaintext plaintext;
     const auto result = context->Decrypt(secretKey, ciphertext, &plaintext);
     if (!result.isValid) {
         throw std::runtime_error("OpenFHE decryption failed");
     }
-    plaintext->SetLength(length);
-    auto values = plaintext->GetPackedValue();
-    values.resize(length);
-    return values;
+    plaintext->SetLength(1);
+    return plaintext->GetCoefPackedValue().at(0);
 }
 
 std::string trim(std::string value) {
@@ -167,7 +163,6 @@ void commandSetup(const Arguments& arguments) {
     CCParams<CryptoContextBFVRNS> parameters;
     parameters.SetPlaintextModulus(kPlaintextModulus);
     parameters.SetMultiplicativeDepth(2);
-    parameters.SetBatchSize(kPackedSlots);
     parameters.SetSecurityLevel(HEStd_128_classic);
 
     auto context = GenCryptoContext(parameters);
@@ -196,17 +191,19 @@ void commandSetup(const Arguments& arguments) {
         }
     }
 
-    const auto encryptedZero = encryptVector(
-        context, keys.publicKey, {0, 0, 0, 0});
-    const auto encryptedOne = encryptVector(
-        context, keys.publicKey, {1, 1, 1, 0});
-    serializeToFile(stateDirectory / "tally.ct", encryptedZero);
+    const auto encryptedTallyA = encryptScalar(context, keys.publicKey, 0);
+    const auto encryptedTallyB = encryptScalar(context, keys.publicKey, 0);
+    const auto encryptedTallyC = encryptScalar(context, keys.publicKey, 0);
+    const auto encryptedOne = encryptScalar(context, keys.publicKey, 1);
+    serializeToFile(stateDirectory / "tally_a.ct", encryptedTallyA);
+    serializeToFile(stateDirectory / "tally_b.ct", encryptedTallyB);
+    serializeToFile(stateDirectory / "tally_c.ct", encryptedTallyC);
     serializeToFile(publicDirectory / "encrypted_one.ct", encryptedOne);
 
     std::cout
         << "{\"scheme\":\"BFV-RNS\",\"plaintext_modulus\":"
         << kPlaintextModulus
-        << ",\"slots\":" << kPackedSlots
+        << ",\"encoding\":\"coefficient-scalar\""
         << ",\"security\":\"HEStd_128_classic\"}\n";
 }
 
@@ -236,8 +233,7 @@ void commandInitializeFlags(const Arguments& arguments) {
             throw std::runtime_error(
                 "invalid token key in list: " + tokenKey);
         }
-        const auto encryptedFlag = encryptVector(
-            context, publicKey, {0, 0, 0, 0});
+        const auto encryptedFlag = encryptScalar(context, publicKey, 0);
         serializeToFile(
             flagsDirectory / (tokenKey + ".ct"),
             encryptedFlag);
@@ -249,7 +245,7 @@ void commandInitializeFlags(const Arguments& arguments) {
 
 void commandEncryptChoice(const Arguments& arguments) {
     const fs::path publicDirectory = required(arguments, "public-dir");
-    const fs::path outputPath = required(arguments, "out");
+    const fs::path outputDirectory = required(arguments, "out-dir");
     std::string choice = required(arguments, "choice");
     std::transform(
         choice.begin(), choice.end(), choice.begin(),
@@ -257,34 +253,36 @@ void commandEncryptChoice(const Arguments& arguments) {
             return static_cast<char>(std::toupper(character));
         });
 
-    std::vector<int64_t> encoded;
-    if (choice == "A") {
-        encoded = {1, 0, 0, 0};
-    }
-    else if (choice == "B") {
-        encoded = {0, 1, 0, 0};
-    }
-    else if (choice == "C") {
-        encoded = {0, 0, 1, 0};
-    }
-    else {
+    if (choice != "A" && choice != "B" && choice != "C") {
         throw std::runtime_error("choice must be A, B, or C");
     }
 
     const auto context = loadContext(publicDirectory);
     const auto publicKey = loadPublicKey(publicDirectory);
-    const auto ciphertext = encryptVector(context, publicKey, encoded);
-    serializeToFile(outputPath, ciphertext);
-    std::cout << "{\"encrypted\":true}\n";
+    fs::create_directories(outputDirectory);
+    serializeToFile(
+        outputDirectory / "choice_a.ct",
+        encryptScalar(context, publicKey, choice == "A" ? 1 : 0));
+    serializeToFile(
+        outputDirectory / "choice_b.ct",
+        encryptScalar(context, publicKey, choice == "B" ? 1 : 0));
+    serializeToFile(
+        outputDirectory / "choice_c.ct",
+        encryptScalar(context, publicKey, choice == "C" ? 1 : 0));
+    std::cout
+        << "{\"encrypted\":true,\"ciphertexts\":3,"
+           "\"encoding\":\"coefficient-scalar\"}\n";
 }
 
 void commandEvaluate(const Arguments& arguments) {
     const fs::path publicDirectory = required(arguments, "public-dir");
     const fs::path flagInput = required(arguments, "flag-in");
-    const fs::path tallyInput = required(arguments, "tally-in");
-    const fs::path ballotInput = required(arguments, "ballot-in");
+    const fs::path tallyInputDirectory =
+        required(arguments, "tally-dir-in");
+    const fs::path ballotDirectory = required(arguments, "ballot-dir");
     const fs::path flagOutput = required(arguments, "flag-out");
-    const fs::path tallyOutput = required(arguments, "tally-out");
+    const fs::path tallyOutputDirectory =
+        required(arguments, "tally-dir-out");
     const std::string evaluatorName = optional(
         arguments, "evaluator", "openfhe");
 
@@ -294,10 +292,19 @@ void commandEvaluate(const Arguments& arguments) {
     he_voting::EncryptedVoteState currentState;
     currentState.hasVoted =
         deserializeFromFile<Ciphertext<DCRTPoly>>(flagInput);
-    currentState.tally =
-        deserializeFromFile<Ciphertext<DCRTPoly>>(tallyInput);
-    const auto encryptedChoice =
-        deserializeFromFile<Ciphertext<DCRTPoly>>(ballotInput);
+    currentState.tallyA = deserializeFromFile<Ciphertext<DCRTPoly>>(
+        tallyInputDirectory / "tally_a.ct");
+    currentState.tallyB = deserializeFromFile<Ciphertext<DCRTPoly>>(
+        tallyInputDirectory / "tally_b.ct");
+    currentState.tallyC = deserializeFromFile<Ciphertext<DCRTPoly>>(
+        tallyInputDirectory / "tally_c.ct");
+    he_voting::EncryptedChoice encryptedChoice;
+    encryptedChoice.choiceA = deserializeFromFile<Ciphertext<DCRTPoly>>(
+        ballotDirectory / "choice_a.ct");
+    encryptedChoice.choiceB = deserializeFromFile<Ciphertext<DCRTPoly>>(
+        ballotDirectory / "choice_b.ct");
+    encryptedChoice.choiceC = deserializeFromFile<Ciphertext<DCRTPoly>>(
+        ballotDirectory / "choice_c.ct");
     const auto encryptedOne =
         deserializeFromFile<Ciphertext<DCRTPoly>>(
             publicDirectory / "encrypted_one.ct");
@@ -307,7 +314,12 @@ void commandEvaluate(const Arguments& arguments) {
         context, encryptedChoice, currentState, encryptedOne);
 
     serializeToFile(flagOutput, nextState.hasVoted);
-    serializeToFile(tallyOutput, nextState.tally);
+    serializeToFile(
+        tallyOutputDirectory / "tally_a.ct", nextState.tallyA);
+    serializeToFile(
+        tallyOutputDirectory / "tally_b.ct", nextState.tallyB);
+    serializeToFile(
+        tallyOutputDirectory / "tally_c.ct", nextState.tallyC);
     std::cout
         << "{\"evaluated\":true,\"evaluator\":\""
         << evaluator->name() << "\"}\n";
@@ -316,34 +328,26 @@ void commandEvaluate(const Arguments& arguments) {
 void commandDecryptResult(const Arguments& arguments) {
     const fs::path publicDirectory = required(arguments, "public-dir");
     const fs::path trusteeDirectory = required(arguments, "trustee-dir");
-    const fs::path tallyPath = required(arguments, "tally");
+    const fs::path tallyDirectory = required(arguments, "tally-dir");
 
     const auto context = loadContext(publicDirectory);
     const auto secretKey = deserializeFromFile<PrivateKey<DCRTPoly>>(
         trusteeDirectory / "secret_key.bin");
-    const auto tally =
-        deserializeFromFile<Ciphertext<DCRTPoly>>(tallyPath);
-    const auto values = decryptVector(context, secretKey, tally, 3);
+    const auto tallyA = deserializeFromFile<Ciphertext<DCRTPoly>>(
+        tallyDirectory / "tally_a.ct");
+    const auto tallyB = deserializeFromFile<Ciphertext<DCRTPoly>>(
+        tallyDirectory / "tally_b.ct");
+    const auto tallyC = deserializeFromFile<Ciphertext<DCRTPoly>>(
+        tallyDirectory / "tally_c.ct");
+    const auto valueA = decryptScalar(context, secretKey, tallyA);
+    const auto valueB = decryptScalar(context, secretKey, tallyB);
+    const auto valueC = decryptScalar(context, secretKey, tallyC);
 
     std::cout
-        << "{\"A\":" << values[0]
-        << ",\"B\":" << values[1]
-        << ",\"C\":" << values[2]
+        << "{\"A\":" << valueA
+        << ",\"B\":" << valueB
+        << ",\"C\":" << valueC
         << "}\n";
-}
-
-void commandDecryptFlag(const Arguments& arguments) {
-    const fs::path publicDirectory = required(arguments, "public-dir");
-    const fs::path trusteeDirectory = required(arguments, "trustee-dir");
-    const fs::path flagPath = required(arguments, "flag");
-
-    const auto context = loadContext(publicDirectory);
-    const auto secretKey = deserializeFromFile<PrivateKey<DCRTPoly>>(
-        trusteeDirectory / "secret_key.bin");
-    const auto flag =
-        deserializeFromFile<Ciphertext<DCRTPoly>>(flagPath);
-    const auto values = decryptVector(context, secretKey, flag, 1);
-    std::cout << "{\"has_voted\":" << values[0] << "}\n";
 }
 
 void printUsage() {
@@ -354,14 +358,12 @@ void printUsage() {
         << "  he_voting_crypto init-flags --public-dir DIR "
            "--token-keys FILE --flags-dir DIR\n"
         << "  he_voting_crypto encrypt-choice --public-dir DIR "
-           "--choice A|B|C --out FILE\n"
+           "--choice A|B|C --out-dir DIR\n"
         << "  he_voting_crypto evaluate --public-dir DIR --flag-in FILE "
-           "--tally-in FILE --ballot-in FILE --flag-out FILE "
-           "--tally-out FILE [--evaluator openfhe]\n"
+           "--tally-dir-in DIR --ballot-dir DIR --flag-out FILE "
+           "--tally-dir-out DIR [--evaluator openfhe]\n"
         << "  he_voting_crypto decrypt-result --public-dir DIR "
-           "--trustee-dir DIR --tally FILE\n"
-        << "  he_voting_crypto decrypt-flag --public-dir DIR "
-           "--trustee-dir DIR --flag FILE\n";
+           "--trustee-dir DIR --tally-dir DIR\n";
 }
 
 }  // namespace
@@ -383,9 +385,6 @@ int main(int argc, char** argv) {
         }
         else if (arguments.command == "decrypt-result") {
             commandDecryptResult(arguments);
-        }
-        else if (arguments.command == "decrypt-flag") {
-            commandDecryptFlag(arguments);
         }
         else {
             printUsage();

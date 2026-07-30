@@ -41,26 +41,32 @@ This provides a practical lookup while keeping the employee ID out of the API.
 The server can recognize that the same random token was submitted again, but
 cannot see that token's employee or choice.
 
-## 3. Encrypted values
+## 3. Encrypted scalar values
 
-The client encrypts a one-hot BFV vector:
+For every CSV row, the client creates three independent BFV scalar
+ciphertexts:
 
 ```text
-A = Enc([1,0,0])
-B = Enc([0,1,0])
-C = Enc([0,0,1])
+Choice A -> choice_A = Enc(1), choice_B = Enc(0), choice_C = Enc(0)
+Choice B -> choice_A = Enc(0), choice_B = Enc(1), choice_C = Enc(0)
+Choice C -> choice_A = Enc(0), choice_B = Enc(0), choice_C = Enc(1)
 ```
+
+These are coefficient-encoded scalar ciphertexts. The implementation does not
+pack A, B, and C into SIMD slots.
 
 For each eligible token, the server starts with a separately randomized flag:
 
 ```text
-encrypted_has_voted = Enc([0,0,0])
+encrypted_has_voted = Enc(0)
 ```
 
-The shared tally starts as:
+The three shared counters start as separate ciphertexts:
 
 ```text
-encrypted_tally = Enc([0,0,0])
+encrypted_tally_A = Enc(0)
+encrypted_tally_B = Enc(0)
+encrypted_tally_C = Enc(0)
 ```
 
 ## 4. Entire HE calculation
@@ -68,22 +74,29 @@ encrypted_tally = Enc([0,0,0])
 For every request, without decrypting or branching on the flag:
 
 ```text
-can_vote      = Enc([1,1,1]) - encrypted_has_voted
-accepted_vote = can_vote * encrypted_choice
-new_tally     = encrypted_tally + accepted_vote
-new_flag      = encrypted_has_voted + can_vote
+can_vote = Enc(1) - encrypted_has_voted
+
+accepted_A = can_vote * encrypted_choice_A
+accepted_B = can_vote * encrypted_choice_B
+accepted_C = can_vote * encrypted_choice_C
+
+new_tally_A = encrypted_tally_A + accepted_A
+new_tally_B = encrypted_tally_B + accepted_B
+new_tally_C = encrypted_tally_C + accepted_C
+
+new_flag = encrypted_has_voted + can_vote
 ```
 
 First vote:
 
 ```text
-can_vote = [1,1,1] - [0,0,0] = [1,1,1]
+can_vote = Enc(1) - Enc(0) = Enc(1)
 ```
 
 Duplicate:
 
 ```text
-can_vote = [1,1,1] - [1,1,1] = [0,0,0]
+can_vote = Enc(1) - Enc(1) = Enc(0)
 ```
 
 The API runs the same ciphertext operations and returns the same receipt shape
@@ -104,8 +117,8 @@ Only the aggregate is normally decrypted:
 {"A": 1, "B": 1, "C": 1}
 ```
 
-The native `decrypt-flag` command exists only for automated development tests.
-It is not exposed by the API.
+No flag or individual-ballot decryption command exists. Only the three final
+aggregate counters can be passed to the native result-decryption command.
 
 ## 6. Implemented technologies
 
@@ -129,9 +142,13 @@ The native application uses:
 
 ```text
 VoteEvaluator.evaluate(
-    encrypted_choice,
+    encrypted_choice_A,
+    encrypted_choice_B,
+    encrypted_choice_C,
     encrypted_has_voted,
-    encrypted_tally,
+    encrypted_tally_A,
+    encrypted_tally_B,
+    encrypted_tally_C,
     encrypted_one
 )
 ```
@@ -149,7 +166,7 @@ HE_EVALUATOR=heir-openfhe
 ```
 
 That option fails closed until a reviewed HEIR-generated kernel is compiled into
-the executable. HEIR would compile the fixed four-operation calculation once
+the executable. HEIR would compile the fixed scalar calculation once
 and still use OpenFHE at runtime. It is not run for every CSV row.
 
 An evaluator cannot change during an election because its context and
@@ -161,10 +178,10 @@ ciphertexts must remain compatible.
 |---|---|
 | `GET /health` | Service and evaluator status |
 | `GET /election/public-material` | BFV context and public key |
-| `POST /election/vote` | Random voter token plus encrypted A/B/C choice |
+| `POST /election/vote` | Random voter token plus three scalar A/B/C ciphertexts |
 | `GET /election/receipt/{id}` | Receipt inclusion check |
 | `GET /election/bulletin-board` | Ordered ballot hashes and hash chain |
-| `GET /election/encrypted-result` | Final encrypted three-slot tally |
+| `GET /election/encrypted-result` | Three separate encrypted scalar totals |
 | `GET /election/result` | Trustee-published aggregate |
 
 The API has no decryption endpoint.
@@ -198,13 +215,16 @@ duplicate requests are serialized so at most one contributes to the tally.
 Automated tests verify:
 
 1. The vote CSV has only `employee_id,choice`.
-2. Re-encrypting the same choice produces different ciphertext bytes.
-3. A first vote increments exactly one encrypted counter.
-4. A duplicate changes no counter.
-5. Two concurrent duplicate submissions count at most once.
-6. API responses have the same shape for first and duplicate submissions.
-7. The API runtime contains no secret key.
-8. The trustee decrypts the expected `[A,B,C]` aggregate.
+2. Each CSV row is encrypted and submitted separately.
+3. Each choice produces three scalar ciphertexts with fresh randomness.
+4. Re-encrypting the same choice produces different ciphertext bytes.
+5. A first vote increments exactly one encrypted counter.
+6. A duplicate changes no counter.
+7. Two concurrent duplicate submissions count at most once.
+8. API responses have the same shape for first and duplicate submissions.
+9. The API runtime contains no secret key.
+10. No flag or individual-ballot decryption operation is available.
+11. The trustee decrypts only the final A, B, and C aggregate ciphertexts.
 
 ## 11. Scaling notes
 

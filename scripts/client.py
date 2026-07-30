@@ -30,27 +30,38 @@ def encrypt_choice(
     crypto_binary: Path,
     public_directory: Path,
     choice: str,
-) -> bytes:
+) -> dict[str, bytes]:
     with tempfile.TemporaryDirectory(prefix="he-vote-client-") as temporary:
-        output_path = Path(temporary) / "choice.ct"
+        output_directory = Path(temporary) / "choice"
         CryptoCli(crypto_binary).encrypt_choice(
             public_dir=public_directory,
             choice=choice,
-            output=output_path,
+            output_directory=output_directory,
         )
-        return output_path.read_bytes()
+        return {
+            choice_name: (
+                output_directory / f"choice_{choice_name}.ct"
+            ).read_bytes()
+            for choice_name in ("a", "b", "c")
+        }
 
 
 def submit_vote(
     api_url: str,
     voter_token: str,
-    encrypted_choice: bytes,
+    encrypted_choice: dict[str, bytes],
 ) -> dict[str, object]:
     payload = json.dumps(
         {
             "voter_token": voter_token,
-            "encrypted_choice": base64.b64encode(
-                encrypted_choice
+            "encrypted_choice_a": base64.b64encode(
+                encrypted_choice["a"]
+            ).decode("ascii"),
+            "encrypted_choice_b": base64.b64encode(
+                encrypted_choice["b"]
+            ).decode("ascii"),
+            "encrypted_choice_c": base64.b64encode(
+                encrypted_choice["c"]
             ).decode("ascii"),
         }
     ).encode("utf-8")
@@ -108,4 +119,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

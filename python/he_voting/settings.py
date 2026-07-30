@@ -59,11 +59,12 @@ class Settings:
             self.public_dir / "public_key.bin",
             self.public_dir / "eval_mult_keys.bin",
             self.public_dir / "encrypted_one.ct",
-            self.state_dir / "tally.ct",
+            self.state_dir / "tally_a.ct",
+            self.state_dir / "tally_b.ct",
+            self.state_dir / "tally_c.ct",
         ]
         missing = [str(path) for path in required_files if not path.is_file()]
         if missing:
             raise FileNotFoundError(
                 "election runtime is incomplete; missing: " + ", ".join(missing)
             )
-

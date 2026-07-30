@@ -17,6 +17,7 @@ from .settings import Settings
 
 EMPTY_CHAIN_HASH = "0" * 64
 MAX_CIPHERTEXT_BYTES = 2 * 1024 * 1024
+CHOICE_NAMES = ("a", "b", "c")
 
 
 @dataclass(frozen=True)
@@ -109,13 +110,24 @@ class VotingService:
         return len(rows)
 
     @staticmethod
-    def _validate_ciphertext(ciphertext: bytes) -> None:
-        if not ciphertext:
-            raise ValueError("encrypted choice must not be empty")
-        if len(ciphertext) > MAX_CIPHERTEXT_BYTES:
+    def _validate_ciphertexts(
+        encrypted_choice: dict[str, bytes],
+    ) -> None:
+        if set(encrypted_choice) != set(CHOICE_NAMES):
             raise ValueError(
-                f"encrypted choice exceeds {MAX_CIPHERTEXT_BYTES} bytes"
+                "encrypted choice must contain separate A, B, and C ciphertexts"
             )
+        for choice_name in CHOICE_NAMES:
+            ciphertext = encrypted_choice[choice_name]
+            if not ciphertext:
+                raise ValueError(
+                    f"encrypted choice {choice_name.upper()} must not be empty"
+                )
+            if len(ciphertext) > MAX_CIPHERTEXT_BYTES:
+                raise ValueError(
+                    f"encrypted choice {choice_name.upper()} exceeds "
+                    f"{MAX_CIPHERTEXT_BYTES} bytes"
+                )
 
     def _next_chain_values(
         self,
@@ -141,12 +153,18 @@ class VotingService:
         ).encode("ascii")
         return next_sequence, hashlib.sha256(chain_material).hexdigest()
 
-    def submit(self, voter_token: str, encrypted_choice: bytes) -> Receipt:
-        self._validate_ciphertext(encrypted_choice)
+    def submit(
+        self,
+        voter_token: str,
+        encrypted_choice: dict[str, bytes],
+    ) -> Receipt:
+        self._validate_ciphertexts(encrypted_choice)
         token_hash = self.token_hash(voter_token)
-        ballot_hash = hashlib.sha256(
-            token_hash.encode("ascii") + encrypted_choice
-        ).hexdigest()
+        ballot_digest = hashlib.sha256(token_hash.encode("ascii"))
+        for choice_name in CHOICE_NAMES:
+            ballot_digest.update(choice_name.encode("ascii"))
+            ballot_digest.update(encrypted_choice[choice_name])
+        ballot_hash = ballot_digest.hexdigest()
         receipt_id = ballot_hash
 
         with self._lock:
@@ -180,19 +198,24 @@ class VotingService:
                 sequence, chain_hash = self._next_chain_values(
                     connection, ballot_hash
                 )
-                ballot_path = (
+                ballot_directory = (
                     self.settings.ballots_dir
-                    / f"{sequence:012d}-{receipt_id}.ct"
+                    / f"{sequence:012d}-{receipt_id}"
                 )
-                ballot_temp = ballot_path.with_suffix(".ct.tmp")
-                ballot_temp.write_bytes(encrypted_choice)
-                os.replace(ballot_temp, ballot_path)
+                ballot_directory.mkdir(parents=True, exist_ok=False)
+                for choice_name in CHOICE_NAMES:
+                    ballot_path = (
+                        ballot_directory / f"choice_{choice_name}.ct"
+                    )
+                    ballot_temp = ballot_path.with_suffix(".ct.tmp")
+                    ballot_temp.write_bytes(encrypted_choice[choice_name])
+                    os.replace(ballot_temp, ballot_path)
 
                 internal_status = "ignored_unknown_token"
                 if eligible:
                     self._apply_encrypted_vote(
                         token_hash=token_hash,
-                        ballot_path=ballot_path,
+                        ballot_directory=ballot_directory,
                     )
                     internal_status = "evaluated"
 
@@ -216,7 +239,11 @@ class VotingService:
                         ballot_hash,
                         sequence,
                         chain_hash,
-                        str(ballot_path.relative_to(self.settings.runtime_dir)),
+                        str(
+                            ballot_directory.relative_to(
+                                self.settings.runtime_dir
+                            )
+                        ),
                         internal_status,
                         datetime.now(timezone.utc).isoformat(),
                     ),
@@ -240,10 +267,9 @@ class VotingService:
     def _apply_encrypted_vote(
         self,
         token_hash: str,
-        ballot_path: Path,
+        ballot_directory: Path,
     ) -> None:
         flag_path = self.settings.flags_dir / f"{token_hash}.ct"
-        tally_path = self.settings.state_dir / "tally.ct"
         if not flag_path.is_file():
             raise FileNotFoundError(
                 "eligible token has no encrypted has_voted state"
@@ -255,28 +281,45 @@ class VotingService:
         ) as temporary_directory:
             temporary = Path(temporary_directory)
             next_flag = temporary / "flag.ct"
-            next_tally = temporary / "tally.ct"
+            next_tally_directory = temporary / "next_tally"
             previous_flag = temporary / "flag.previous.ct"
-            previous_tally = temporary / "tally.previous.ct"
+            previous_tally_directory = temporary / "previous_tally"
+            next_tally_directory.mkdir()
+            previous_tally_directory.mkdir()
             shutil.copy2(flag_path, previous_flag)
-            shutil.copy2(tally_path, previous_tally)
+            for choice_name in CHOICE_NAMES:
+                shutil.copy2(
+                    self.settings.state_dir / f"tally_{choice_name}.ct",
+                    previous_tally_directory / f"tally_{choice_name}.ct",
+                )
 
             self.crypto.evaluate(
                 public_dir=self.settings.public_dir,
                 flag_input=flag_path,
-                tally_input=tally_path,
-                ballot_input=ballot_path,
+                tally_input_directory=self.settings.state_dir,
+                ballot_directory=ballot_directory,
                 flag_output=next_flag,
-                tally_output=next_tally,
+                tally_output_directory=next_tally_directory,
                 evaluator=self.settings.evaluator,
             )
 
             try:
                 os.replace(next_flag, flag_path)
-                os.replace(next_tally, tally_path)
+                for choice_name in CHOICE_NAMES:
+                    os.replace(
+                        next_tally_directory / f"tally_{choice_name}.ct",
+                        self.settings.state_dir
+                        / f"tally_{choice_name}.ct",
+                    )
             except Exception:
                 os.replace(previous_flag, flag_path)
-                os.replace(previous_tally, tally_path)
+                for choice_name in CHOICE_NAMES:
+                    os.replace(
+                        previous_tally_directory
+                        / f"tally_{choice_name}.ct",
+                        self.settings.state_dir
+                        / f"tally_{choice_name}.ct",
+                    )
                 raise
 
     def get_receipt(self, receipt_id: str) -> Receipt | None:
@@ -317,4 +360,3 @@ class VotingService:
             }
             for row in rows
         ]
-
