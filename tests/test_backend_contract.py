@@ -241,6 +241,13 @@ def test_python_setup_client_and_service_contract(
         assert client.get("/storage").status_code == 200
         employees = client.get("/demo/employees").json()
         assert employees[0]["employee_id"] == "100001"
+        assert employees[0]["submitted_at"] is not None
+        duplicate = client.post(
+            "/demo/vote",
+            json={"employee_id": "100001", "choice": "B"},
+        )
+        assert duplicate.status_code == 409
+        assert duplicate.json()["detail"] == "employee 100001 has already voted"
         progress = client.get("/demo/progress").json()
         assert progress["encrypted_ballots"] == 4
         assert progress["context_id"] == settings.context_id

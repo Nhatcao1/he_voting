@@ -13,7 +13,11 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .voting_service import VotingService
+from .voting_service import (
+    AlreadyVotedError,
+    UnknownEmployeeError,
+    VotingService,
+)
 from .settings import Settings
 
 
@@ -129,7 +133,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 request.employee_id,
                 encrypted_choice,
             )
-        except (ValueError, binascii.Error) as error:
+        except AlreadyVotedError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(error),
+            ) from error
+        except (UnknownEmployeeError, ValueError, binascii.Error) as error:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(error),
@@ -152,7 +161,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             encrypted_choice = service.crypto.encrypt_choice(request.choice)
             encryption_ms = (time.perf_counter() - encryption_started) * 1000
             receipt = service.submit(request.employee_id, encrypted_choice)
-        except ValueError as error:
+        except AlreadyVotedError as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(error),
+            ) from error
+        except (UnknownEmployeeError, ValueError) as error:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(error),

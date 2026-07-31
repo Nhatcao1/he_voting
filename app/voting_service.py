@@ -32,6 +32,14 @@ MAX_CIPHERTEXT_BYTES = 2 * 1024 * 1024
 CHOICE_NAMES = ("a", "b", "c")
 
 
+class UnknownEmployeeError(ValueError):
+    """The submitted employee ID is not part of this election."""
+
+
+class AlreadyVotedError(ValueError):
+    """The submitted employee already has one accepted ballot."""
+
+
 @dataclass(frozen=True)
 class Receipt:
     """Public proof that the service recorded a submission in a given order."""
@@ -48,8 +56,8 @@ class VotingService:
 
     The encrypted API receives an employee ID plus three ciphertexts. SQLite
     records which prepared employee submitted, but never stores their choice.
-    Every submission from a prepared employee is added to the encrypted tally;
-    repeated submissions are intentionally counted by this demo.
+    A plaintext ``has_voted`` flag ensures each prepared employee can affect
+    the encrypted tally exactly once.
     """
 
     def __init__(self, settings: Settings):
@@ -102,7 +110,8 @@ class VotingService:
                 -- Prepared employees populate the UI dropdown.
                 CREATE TABLE IF NOT EXISTS employees (
                     employee_id TEXT PRIMARY KEY,
-                    display_name TEXT NOT NULL
+                    display_name TEXT NOT NULL,
+                    has_voted INTEGER NOT NULL DEFAULT 0
                 );
 
                 -- The choice itself lives at ciphertext_path, never in SQLite.
@@ -143,6 +152,63 @@ class VotingService:
                     ADD COLUMN processing_ms REAL NOT NULL DEFAULT 0
                     """
                 )
+            employee_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(employees)"
+                ).fetchall()
+            }
+            if "has_voted" not in employee_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE employees
+                    ADD COLUMN has_voted INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+
+            duplicate = connection.execute(
+                """
+                SELECT employee_id, COUNT(*) AS ballot_count
+                FROM ballots
+                WHERE internal_status IN ('accepted', 'evaluated')
+                GROUP BY employee_id
+                HAVING COUNT(*) > 1
+                LIMIT 1
+                """
+            ).fetchone()
+            if duplicate is not None:
+                raise RuntimeError(
+                    "existing runtime already contains multiple accepted "
+                    f"ballots for employee {duplicate['employee_id']}; "
+                    "prepare a fresh election because encrypted historical "
+                    "totals cannot be corrected without rebuilding them"
+                )
+
+            # Migrate existing one-ballot runtimes without changing their
+            # ciphertexts or tallies.
+            connection.execute(
+                """
+                UPDATE employees
+                SET has_voted = CASE
+                    WHEN EXISTS (
+                        SELECT 1
+                        FROM ballots
+                        WHERE ballots.employee_id = employees.employee_id
+                          AND internal_status IN ('accepted', 'evaluated')
+                    )
+                    THEN 1
+                    ELSE 0
+                END
+                """
+            )
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    one_accepted_ballot_per_employee
+                ON ballots(employee_id)
+                WHERE internal_status IN ('accepted', 'evaluated')
+                """
+            )
 
     @staticmethod
     def _receipt_status(internal_status: str) -> str:
@@ -266,16 +332,25 @@ class VotingService:
         # metadata updates ordered relative to other submissions in this worker.
         with self._lock:
             with self._connect() as connection:
-                # Eligibility is plaintext metadata; the vote choice is not.
-                eligible = (
-                    connection.execute(
-                        """
-                        SELECT 1 FROM employees WHERE employee_id = ?
-                        """,
-                        (normalized_employee_id,),
-                    ).fetchone()
-                    is not None
-                )
+                # Lock the plaintext employee state before checking it. This
+                # protects the rule even if a second app process is started.
+                connection.execute("BEGIN IMMEDIATE")
+                employee = connection.execute(
+                    """
+                    SELECT has_voted
+                    FROM employees
+                    WHERE employee_id = ?
+                    """,
+                    (normalized_employee_id,),
+                ).fetchone()
+                if employee is None:
+                    raise UnknownEmployeeError(
+                        f"employee ID is not prepared: {normalized_employee_id}"
+                    )
+                if bool(employee["has_voted"]):
+                    raise AlreadyVotedError(
+                        f"employee {normalized_employee_id} has already voted"
+                    )
 
                 sequence, chain_hash = self._next_chain_values(
                     connection, ballot_hash
@@ -299,13 +374,12 @@ class VotingService:
                     os.replace(ballot_temp, ballot_path)
 
                 submitted_at = datetime.now(timezone.utc).isoformat()
-                internal_status = "rejected_unknown_employee"
-                if eligible:
-                    # Only eligible ballots affect the encrypted totals.
-                    self._apply_encrypted_vote(
-                        ballot_directory=ballot_directory,
-                    )
-                    internal_status = "accepted"
+                # The plaintext has_voted check is complete. Only the three
+                # encrypted choice values enter the homomorphic calculation.
+                self._apply_encrypted_vote(
+                    ballot_directory=ballot_directory,
+                )
+                internal_status = "accepted"
 
                 processing_ms = (
                     time.perf_counter() - processing_started
@@ -348,6 +422,14 @@ class VotingService:
                 connection.execute(
                     "UPDATE metadata SET value = ? WHERE key = 'chain_hash'",
                     (chain_hash,),
+                )
+                connection.execute(
+                    """
+                    UPDATE employees
+                    SET has_voted = 1
+                    WHERE employee_id = ? AND has_voted = 0
+                    """,
+                    (normalized_employee_id,),
                 )
 
                 # Exiting the connection context commits the SQLite transaction.
@@ -431,11 +513,7 @@ class VotingService:
         )
 
     def participation_records(self) -> dict[str, str]:
-        """Return first-submission times by employee ID, without choices.
-
-        ``MIN`` and ``GROUP BY`` collapse repeated accepted submissions into
-        one participation entry even though every accepted ballot was counted.
-        """
+        """Return accepted-submission times by employee ID, without choices."""
         with self._connect() as connection:
             rows = connection.execute(
                 """

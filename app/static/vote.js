@@ -11,7 +11,10 @@ async function loadEmployees() {
   for (const employee of employees) {
     const option = document.createElement("option");
     option.value = employee.employee_id;
-    option.textContent = `${employee.employee_id} — ${employee.display_name}`;
+    option.disabled = Boolean(employee.submitted_at);
+    option.textContent =
+      `${employee.employee_id} — ${employee.display_name}` +
+      (employee.submitted_at ? " — already voted" : "");
     employeeSelect.appendChild(option);
   }
 }
@@ -37,6 +40,7 @@ form.addEventListener("submit", async (event) => {
     statusBox.textContent =
       `Accepted as encrypted ballot #${body.sequence}. ` +
       `Receipt ${body.receipt.slice(0, 16)}…`;
+    await loadEmployees();
   } catch (error) {
     statusBox.className = "status error";
     statusBox.textContent = error.message;

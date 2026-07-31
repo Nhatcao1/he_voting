@@ -33,8 +33,8 @@ ballots(employee_id, ciphertext_path, receipt, audit metadata)
 ```
 
 Participation is intentionally visible metadata. The application can determine
-whether an employee submitted, but it cannot read the encrypted choice. This
-simplified MVP does not enforce one submission per employee.
+whether an employee submitted, but it cannot read the encrypted choice. A
+plaintext `has_voted` flag allows exactly one accepted ballot per employee.
 
 The security boundary is:
 
@@ -169,7 +169,7 @@ ciphertext files.
 - The MVP uses one trustee secret key rather than threshold shares.
 - The supplied client is trusted to encode exactly one of A, B, or C.
 - Employee IDs directly link employees to participation.
-- Repeated submissions are not prevented in this simplified benchmark.
+- A second submission for the same employee is rejected before storage or HE.
 - The demo employee dropdown is not an authentication mechanism.
 - Receipts and the hash chain provide audit evidence but do not force the
   server to accept a request.

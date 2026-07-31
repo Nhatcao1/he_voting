@@ -9,7 +9,8 @@ A small OpenFHE BFV demo for employee voting with choices A, B, and C.
 - The server performs three homomorphic `EvalAdd` operations per accepted row.
 - Ballot ciphertexts and encrypted running totals are retained on disk.
 - Only the final aggregate A/B/C totals are decrypted.
-- Repeated submissions are counted. There is no duplicate-vote check.
+- SQLite stores a plaintext `has_voted` flag, so each prepared employee can
+  contribute exactly one encrypted ballot.
 
 ## Code layout
 

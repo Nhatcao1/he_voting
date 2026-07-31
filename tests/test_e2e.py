@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.api import create_app
 from app.settings import Settings
-from app.voting_service import VotingService
+from app.voting_service import AlreadyVotedError, VotingService
 from client import encrypt_choice
 from generate_data import generate
 from he_voting.openfhe_backend import OpenFHEBackend
@@ -119,7 +119,7 @@ def test_every_generated_row_is_added_to_encrypted_tally(
     )
 
 
-def test_api_accepts_each_encrypted_submission(
+def test_api_rejects_a_second_submission_for_the_same_employee(
     election: dict[str, Path | Settings],
 ) -> None:
     generated = election["generated"]
@@ -152,15 +152,15 @@ def test_api_accepts_each_encrypted_submission(
                     ).decode("ascii"),
                 },
             )
-            assert response.status_code == 202
-            responses.append(response.json())
+            responses.append(response)
 
-        assert set(responses[0]) == set(responses[1])
-        assert responses[0]["status"] == "accepted"
-        assert responses[1]["status"] == "accepted"
-        assert responses[0]["receipt"] != responses[1]["receipt"]
-        assert responses[0]["processing_ms"] > 0
-        assert responses[1]["processing_ms"] > 0
+        assert responses[0].status_code == 202
+        assert responses[1].status_code == 409
+        assert responses[0].json()["status"] == "accepted"
+        assert responses[0].json()["processing_ms"] > 0
+        assert responses[1].json()["detail"] == (
+            "employee 100001 has already voted"
+        )
         assert (
             client.get("/health").json()["backend"]
             == "openfhe-python"
@@ -168,10 +168,10 @@ def test_api_accepts_each_encrypted_submission(
         assert client.get("/vote").status_code == 200
         assert client.get("/storage").status_code == 200
         assert len(client.get("/demo/employees").json()) == 4
-        assert len(client.get("/election/bulletin-board").json()) == 2
+        assert len(client.get("/election/bulletin-board").json()) == 1
 
 
-def test_concurrent_submissions_are_both_added(
+def test_concurrent_submissions_accept_only_one(
     election: dict[str, Path | Settings],
 ) -> None:
     generated = election["generated"]
@@ -194,23 +194,27 @@ def test_concurrent_submissions_are_both_added(
     )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        receipts = list(
-            executor.map(
-                lambda ciphertext: service.submit("100001", ciphertext),
-                (encrypted_a, encrypted_b),
-            )
-        )
-    assert sorted(receipt.sequence for receipt in receipts) == [1, 2]
-    assert sorted(receipt.status for receipt in receipts) == [
-        "accepted",
-        "accepted",
-    ]
+        futures = [
+            executor.submit(service.submit, "100001", ciphertext)
+            for ciphertext in (encrypted_a, encrypted_b)
+        ]
+    receipts = []
+    errors = []
+    for future in futures:
+        try:
+            receipts.append(future.result())
+        except AlreadyVotedError as error:
+            errors.append(error)
+    assert len(receipts) == 1
+    assert receipts[0].sequence == 1
+    assert receipts[0].status == "accepted"
+    assert len(errors) == 1
 
     result = OpenFHEBackend(runtime / "public").decrypt_result(
         trustee_dir=trustee,
         tally_directory=runtime / "state",
     )
-    assert result == {"A": 1, "B": 1, "C": 0}
+    assert sum(result.values()) == 1
 
 
 def test_same_choice_encrypts_to_different_ciphertexts(

@@ -10,6 +10,7 @@ flowchart LR
     end
 
     subgraph SERVER["3. Voting service"]
+        CHECK["Plaintext employee check<br/>prepared + has_voted = false"]
         BALLOTDB[("Ballot database<br/>employee_id, receipt, timestamp<br/>encrypted A/B/C ballot")]
         TALLY[("Encrypted tally store<br/>tally_a.ct, tally_b.ct, tally_c.ct")]
         ADD["Homomorphic calculation only<br/>tally_A = EvalAdd(tally_A, choice_A)<br/>tally_B = EvalAdd(tally_B, choice_B)<br/>tally_C = EvalAdd(tally_C, choice_C)"]
@@ -32,7 +33,8 @@ flowchart LR
     UI --> ENCODE
     ENCODE --> ENCRYPT
     ENCRYPT --> REQUEST
-    REQUEST --> BALLOTDB
+    REQUEST --> CHECK
+    CHECK --> BALLOTDB
     BALLOTDB --> ADD
     TALLY --> ADD
     ADD --> TALLY
@@ -53,7 +55,7 @@ flowchart LR
     classDef secret fill:#ffd9d9,stroke:#a61b1b,color:#111;
     classDef output fill:#dcf7df,stroke:#237a32,color:#111;
 
-    class VOTES,UI,ENCODE,REQUEST,RECEIPT,ADMIN,NOTE plain;
+    class VOTES,UI,ENCODE,REQUEST,CHECK,RECEIPT,ADMIN,NOTE plain;
     class ENCRYPT,BALLOTDB,TALLY,ADD,PVC encrypted;
     class SECRET secret;
     class DECRYPT,RESULT output;
