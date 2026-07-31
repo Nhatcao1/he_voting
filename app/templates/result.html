@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Election result · HE Voting</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/result.js" defer></script>
+  </head>
+  <body>
+    <nav>
+      <strong>HE Voting Demo</strong>
+      <a href="/vote">Vote</a>
+      <a href="/admin">Progress</a>
+      <a href="/result" aria-current="page">Result</a>
+    </nav>
+    <main>
+      <p class="eyebrow">Trustee output</p>
+      <h1>Published A/B/C totals.</h1>
+      <p id="result-state" class="lede">Checking result status…</p>
+      <section id="published-results" class="result-grid hidden">
+        <article class="card result-choice">Choice A<strong id="result-a">0</strong></article>
+        <article class="card result-choice">Choice B<strong id="result-b">0</strong></article>
+        <article class="card result-choice">Choice C<strong id="result-c">0</strong></article>
+      </section>
+    </main>
+  </body>
+</html>

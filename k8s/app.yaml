@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: he-voting
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: he-voting
+  template:
+    metadata:
+      labels:
+        app: he-voting
+    spec:
+      containers:
+        - name: app
+          image: he-voting:demo
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HE_VOTING_RUNTIME
+              value: /data/runtime
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          volumeMounts:
+            - name: election-runtime
+              mountPath: /data/runtime
+      volumes:
+        - name: election-runtime
+          persistentVolumeClaim:
+            claimName: he-voting-runtime
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: he-voting
+spec:
+  type: NodePort
+  selector:
+    app: he-voting
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      nodePort: 30880

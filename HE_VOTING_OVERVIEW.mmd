@@ -1,0 +1,59 @@
+flowchart LR
+    subgraph INPUT["1. Test input"]
+        VOTES["votes.csv<br/>employee_id, choice"]
+    end
+
+    subgraph CLIENT["2. Client processes one row at a time"]
+        ENCODE["One-hot encode choice<br/>A = 1,0,0<br/>B = 0,1,0<br/>C = 0,0,1"]
+        ENCRYPT["OpenFHE BFV encryption<br/>Enc(A), Enc(B), Enc(C)<br/>three separate ciphertexts"]
+        REQUEST["Submit one ballot<br/>employee_id + three ciphertexts"]
+    end
+
+    subgraph SERVER["3. Voting service"]
+        BALLOTDB[("Ballot database<br/>employee_id, receipt, timestamp<br/>encrypted A/B/C ballot")]
+        TALLY[("Encrypted tally store<br/>tally_a.ct, tally_b.ct, tally_c.ct")]
+        ADD["Homomorphic calculation only<br/>tally_A = EvalAdd(tally_A, choice_A)<br/>tally_B = EvalAdd(tally_B, choice_B)<br/>tally_C = EvalAdd(tally_C, choice_C)"]
+        RECEIPT["Return receipt<br/>sequence + chain hash"]
+    end
+
+    subgraph APP["Demo application"]
+        UI["Vote UI<br/>prepared employee dropdown<br/>A / B / C"]
+        PVC[("Persistent runtime<br/>same crypto context + SQLite<br/>ballots + encrypted tallies")]
+        ADMIN["Progress UI<br/>context ID + participation<br/>no choice totals"]
+    end
+
+    subgraph TRUSTEE["4. Aggregate result"]
+        SECRET["Trustee secret key<br/>stored separately"]
+        DECRYPT["Decrypt final aggregate only"]
+        RESULT["Published result<br/>A total, B total, C total<br/>decrypted total"]
+    end
+
+    VOTES --> ENCODE
+    UI --> ENCODE
+    ENCODE --> ENCRYPT
+    ENCRYPT --> REQUEST
+    REQUEST --> BALLOTDB
+    BALLOTDB --> ADD
+    TALLY --> ADD
+    ADD --> TALLY
+    ADD --> RECEIPT
+
+    TALLY --> DECRYPT
+    SECRET --> DECRYPT
+    DECRYPT --> RESULT
+    BALLOTDB --- PVC
+    TALLY --- PVC
+    PVC --> ADMIN
+
+    NOTE["Storage note<br/>Logical design: database may store ciphertext BLOBs.<br/>Current code: SQLite stores metadata and ciphertext paths;<br/>encrypted ballot contents remain in .ct files."]
+    BALLOTDB -.-> NOTE
+
+    classDef plain fill:#fff4cc,stroke:#9a7b00,color:#111;
+    classDef encrypted fill:#d9ecff,stroke:#1769aa,color:#111;
+    classDef secret fill:#ffd9d9,stroke:#a61b1b,color:#111;
+    classDef output fill:#dcf7df,stroke:#237a32,color:#111;
+
+    class VOTES,UI,ENCODE,REQUEST,RECEIPT,ADMIN,NOTE plain;
+    class ENCRYPT,BALLOTDB,TALLY,ADD,PVC encrypted;
+    class SECRET secret;
+    class DECRYPT,RESULT output;

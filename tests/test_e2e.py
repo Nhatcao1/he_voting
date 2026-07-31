@@ -9,12 +9,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from client import encrypt_choice, find_voter_token
+from app.api import create_app
+from app.settings import Settings
+from app.voting_service import VotingService
+from client import encrypt_choice
 from generate_data import generate
-from he_voting.api import create_app
 from he_voting.openfhe_backend import OpenFHEBackend
-from he_voting.service import VotingService
-from he_voting.settings import Settings
 from setup_election import setup_election
 
 
@@ -29,12 +29,11 @@ def election(tmp_path: Path) -> dict[str, Path | Settings]:
         output_directory=generated,
         employee_count=4,
         vote_count=4,
-        seed=7,
     )
     assert expected == {"A": 2, "B": 1, "C": 1}
 
     setup_election(
-        roster_path=generated / "roster.csv",
+        employees_path=generated / "employees.csv",
         runtime_dir=runtime,
         trustee_dir=trustee,
     )
@@ -58,6 +57,8 @@ def test_generated_vote_fixture_has_only_two_columns(
     generated = election["generated"]
     assert isinstance(generated, Path)
     rows = read_rows(generated / "votes.csv")
+    employees = read_rows(generated / "employees.csv")
+    assert list(employees[0]) == ["employee_id", "display_name"]
     assert list(rows[0]) == ["employee_id", "choice"]
     assert rows == [
         {"employee_id": "100001", "choice": "A"},
@@ -83,15 +84,11 @@ def test_every_generated_row_is_added_to_encrypted_tally(
     rows = read_rows(generated / "votes.csv")
     receipts = []
     for row in rows:
-        token = find_voter_token(
-            generated / "roster.csv",
-            row["employee_id"],
-        )
         ciphertext = encrypt_choice(
             runtime / "public",
             row["choice"],
         )
-        receipts.append(service.submit(token, ciphertext))
+        receipts.append(service.submit(row["employee_id"], ciphertext))
 
     assert [receipt.sequence for receipt in receipts] == [1, 2, 3, 4]
     assert [receipt.status for receipt in receipts] == [
@@ -132,7 +129,6 @@ def test_api_accepts_each_encrypted_submission(
     assert isinstance(runtime, Path)
     assert isinstance(settings, Settings)
 
-    token = find_voter_token(generated / "roster.csv", "100001")
     app = create_app(settings)
     with TestClient(app) as client:
         responses = []
@@ -144,7 +140,7 @@ def test_api_accepts_each_encrypted_submission(
             response = client.post(
                 "/election/vote",
                 json={
-                    "voter_token": token,
+                    "employee_id": "100001",
                     "encrypted_choice_a": base64.b64encode(
                         ciphertext["a"]
                     ).decode("ascii"),
@@ -169,6 +165,8 @@ def test_api_accepts_each_encrypted_submission(
             client.get("/health").json()["backend"]
             == "openfhe-python"
         )
+        assert client.get("/vote").status_code == 200
+        assert len(client.get("/demo/employees").json()) == 4
         assert len(client.get("/election/bulletin-board").json()) == 2
 
 
@@ -184,7 +182,6 @@ def test_concurrent_submissions_are_both_added(
     assert isinstance(trustee, Path)
     assert isinstance(settings, Settings)
 
-    token = find_voter_token(generated / "roster.csv", "100001")
     service = VotingService(settings)
     encrypted_a = encrypt_choice(
         runtime / "public",
@@ -198,7 +195,7 @@ def test_concurrent_submissions_are_both_added(
     with ThreadPoolExecutor(max_workers=2) as executor:
         receipts = list(
             executor.map(
-                lambda ciphertext: service.submit(token, ciphertext),
+                lambda ciphertext: service.submit("100001", ciphertext),
                 (encrypted_a, encrypted_b),
             )
         )

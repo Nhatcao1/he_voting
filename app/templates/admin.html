@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Election progress · HE Voting</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/admin.js" defer></script>
+  </head>
+  <body>
+    <nav>
+      <strong>HE Voting Demo</strong>
+      <a href="/vote">Vote</a>
+      <a href="/admin" aria-current="page">Progress</a>
+      <a href="/result">Result</a>
+    </nav>
+    <main>
+      <p class="eyebrow">Live operational view</p>
+      <h1>Election progress.</h1>
+      <p class="lede">
+        Participation is ordinary app metadata. The A/B/C ballot values and
+        running totals remain OpenFHE ciphertexts.
+      </p>
+      <section class="grid">
+        <article class="card metric"><span>Participating employees</span><strong id="participants">—</strong></article>
+        <article class="card metric"><span>Encrypted ballots counted</span><strong id="ballots">—</strong></article>
+        <article class="card metric"><span>Ciphertext files</span><strong id="files">—</strong></article>
+        <article class="card metric"><span>Ciphertext storage</span><strong id="storage">—</strong></article>
+      </section>
+      <section class="card context">
+        <p><strong>HE context ID:</strong> <code id="context-id">loading</code></p>
+        <p><strong>Latest submission:</strong> <span id="latest">—</span></p>
+        <p><strong>Result state:</strong> <span id="result-state">—</span></p>
+      </section>
+    </main>
+  </body>
+</html>

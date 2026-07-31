@@ -1,6 +1,5 @@
-"""Encrypted employee voting MVP."""
+"""OpenFHE primitives for encrypted employee voting."""
 
-from .settings import Settings
+from .openfhe_backend import OpenFHEBackend
 
-__all__ = ["Settings"]
-
+__all__ = ["OpenFHEBackend"]

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 from pathlib import Path
 
@@ -11,16 +10,10 @@ from pathlib import Path
 CHOICES = ("A", "B", "C")
 
 
-def deterministic_token(seed: int, employee_id: str) -> str:
-    material = f"he-voting:{seed}:{employee_id}".encode("utf-8")
-    return hashlib.sha256(material).hexdigest()
-
-
 def generate(
     output_directory: Path,
     employee_count: int,
     vote_count: int,
-    seed: int,
 ) -> dict[str, int]:
     if employee_count < 1:
         raise ValueError("employee_count must be positive")
@@ -33,14 +26,13 @@ def generate(
 
     output_directory.mkdir(parents=True, exist_ok=True)
 
-    roster: list[dict[str, str | int]] = []
+    employees: list[dict[str, str]] = []
     for index in range(employee_count):
         employee_id = str(100001 + index)
-        roster.append(
+        employees.append(
             {
                 "employee_id": employee_id,
                 "display_name": f"Employee {index + 1:05d}",
-                "voter_token": deterministic_token(seed, employee_id),
             }
         )
 
@@ -48,19 +40,19 @@ def generate(
     for index in range(vote_count):
         votes.append(
             {
-                "employee_id": str(roster[index]["employee_id"]),
+                "employee_id": employees[index]["employee_id"],
                 "choice": CHOICES[index % len(CHOICES)],
             }
         )
 
-    roster_path = output_directory / "roster.csv"
-    with roster_path.open("w", encoding="utf-8", newline="") as output:
+    employees_path = output_directory / "employees.csv"
+    with employees_path.open("w", encoding="utf-8", newline="") as output:
         writer = csv.DictWriter(
             output,
-            fieldnames=["employee_id", "display_name", "voter_token"],
+            fieldnames=["employee_id", "display_name"],
         )
         writer.writeheader()
-        writer.writerows(roster)
+        writer.writerows(employees)
 
     votes_path = output_directory / "votes.csv"
     with votes_path.open("w", encoding="utf-8", newline="") as output:
@@ -85,25 +77,25 @@ def generate(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate a local employee roster and a two-column A/B/C vote fixture."
+            "Generate prepared employees and a two-column A/B/C vote fixture."
         )
     )
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--employees", type=int, default=16)
     parser.add_argument("--votes", type=int, default=4)
-    parser.add_argument("--seed", type=int, default=20260729)
     arguments = parser.parse_args()
 
     expected = generate(
         output_directory=arguments.out_dir.resolve(),
         employee_count=arguments.employees,
         vote_count=arguments.votes,
-        seed=arguments.seed,
     )
     print(
         json.dumps(
             {
-                "roster": str((arguments.out_dir / "roster.csv").resolve()),
+                "employees": str(
+                    (arguments.out_dir / "employees.csv").resolve()
+                ),
                 "votes": str((arguments.out_dir / "votes.csv").resolve()),
                 "expected": expected,
             }

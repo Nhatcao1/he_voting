@@ -10,12 +10,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from client import VoteEncryptor, find_voter_token
+from fastapi.testclient import TestClient
+
+from app.api import create_app
+from app.settings import Settings
+from app.voting_service import VotingService
 from benchmark_votes import main as benchmark_main
+from client import VoteEncryptor
 from generate_data import generate
 from he_voting.openfhe_backend import OpenFHEBackend
-from he_voting.service import VotingService
-from he_voting.settings import Settings
 from setup_election import setup_election
 
 
@@ -197,10 +200,9 @@ def test_python_setup_client_and_service_contract(
         output_directory=generated,
         employee_count=4,
         vote_count=4,
-        seed=7,
     )
     setup_election(
-        roster_path=generated / "roster.csv",
+        employees_path=generated / "employees.csv",
         runtime_dir=runtime,
         trustee_dir=trustee,
     )
@@ -216,12 +218,8 @@ def test_python_setup_client_and_service_contract(
     ]
     statuses = []
     for employee_id, choice in vote_rows:
-        token = find_voter_token(
-            generated / "roster.csv",
-            employee_id,
-        )
         receipt = service.submit(
-            token,
+            employee_id,
             encryptor.encrypt_choice(choice),
         )
         statuses.append(receipt.status)
@@ -233,6 +231,18 @@ def test_python_setup_client_and_service_contract(
     )
     assert result == expected == {"A": 2, "B": 1, "C": 1}
     assert len(service.participation_records()) == 4
+    assert settings.context_id == json.loads(
+        (runtime / "election.json").read_text()
+    )["context_id"]
+
+    app = create_app(settings)
+    with TestClient(app) as client:
+        assert client.get("/vote").status_code == 200
+        employees = client.get("/demo/employees").json()
+        assert employees[0]["employee_id"] == "100001"
+        progress = client.get("/demo/progress").json()
+        assert progress["encrypted_ballots"] == 4
+        assert progress["context_id"] == settings.context_id
 
 
 def test_benchmark_writes_client_evidence_bundle(
@@ -248,10 +258,9 @@ def test_benchmark_writes_client_evidence_bundle(
         output_directory=generated,
         employee_count=5,
         vote_count=4,
-        seed=7,
     )
     setup_election(
-        roster_path=generated / "roster.csv",
+        employees_path=generated / "employees.csv",
         runtime_dir=runtime,
         trustee_dir=trustee,
     )
@@ -262,8 +271,8 @@ def test_benchmark_writes_client_evidence_bundle(
             "benchmark_votes.py",
             "--votes",
             str(generated / "votes.csv"),
-            "--roster",
-            str(generated / "roster.csv"),
+            "--employees",
+            str(generated / "employees.csv"),
             "--runtime-dir",
             str(runtime),
             "--trustee-dir",

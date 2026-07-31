@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import shutil
 import sys
@@ -10,35 +11,34 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(PROJECT_DIR / "python"))
 
+from app.settings import Settings  # noqa: E402
+from app.voting_service import VotingService  # noqa: E402
 from he_voting.openfhe_backend import OpenFHEBackend  # noqa: E402
-from he_voting.service import VotingService  # noqa: E402
-from he_voting.settings import Settings  # noqa: E402
 
 
-def read_tokens(roster_path: Path) -> list[str]:
-    with roster_path.open(encoding="utf-8", newline="") as input_file:
+def read_employees(employees_path: Path) -> list[tuple[str, str]]:
+    with employees_path.open(encoding="utf-8", newline="") as input_file:
         rows = list(csv.DictReader(input_file))
     if not rows:
-        raise ValueError("roster must contain at least one employee")
+        raise ValueError("employees CSV must contain at least one employee")
 
-    tokens: list[str] = []
+    employees: list[tuple[str, str]] = []
     for row in rows:
-        token = row.get("voter_token", "").strip().lower()
-        if len(token) != 64:
-            raise ValueError(
-                f"employee {row.get('employee_id')} has an invalid voter token"
-            )
-        bytes.fromhex(token)
-        tokens.append(token)
-    if len(tokens) != len(set(tokens)):
-        raise ValueError("voter tokens must be unique")
-    return tokens
+        employee_id = row.get("employee_id", "").strip()
+        display_name = row.get("display_name", "").strip()
+        if not employee_id:
+            raise ValueError("every employee row needs employee_id")
+        employees.append((employee_id, display_name or employee_id))
+    if len({employee_id for employee_id, _ in employees}) != len(employees):
+        raise ValueError("employee IDs must be unique")
+    return employees
 
 
 def setup_election(
-    roster_path: Path,
+    employees_path: Path,
     runtime_dir: Path,
     trustee_dir: Path,
 ) -> dict[str, object]:
@@ -59,7 +59,7 @@ def setup_election(
     ballots_dir = runtime_dir / "ballots"
     ballots_dir.mkdir(parents=True, exist_ok=True)
 
-    tokens = read_tokens(roster_path)
+    employees = read_employees(employees_path)
     crypto_parameters = crypto.setup(
         public_dir=public_dir,
         trustee_dir=trustee_dir,
@@ -68,16 +68,41 @@ def setup_election(
 
     settings = Settings(runtime_dir=runtime_dir)
     service = VotingService(settings)
-    service.register_tokens(tokens)
+    service.register_employees(employees)
 
+    context_sha256 = hashlib.sha256(
+        (public_dir / "crypto_context.bin").read_bytes()
+    ).hexdigest()
+    public_key_sha256 = hashlib.sha256(
+        (public_dir / "public_key.bin").read_bytes()
+    ).hexdigest()
+    secret_key_sha256 = hashlib.sha256(
+        (trustee_dir / "secret_key.bin").read_bytes()
+    ).hexdigest()
     manifest = {
-        "runtime_version": 3,
-        "employee_count": len(tokens),
+        "runtime_version": 4,
+        "employee_count": len(employees),
         "participation_tracking": "ballot-metadata",
+        "context_sha256": context_sha256,
+        "context_id": context_sha256[:16],
+        "public_key_sha256": public_key_sha256,
         "crypto": crypto_parameters,
     }
     (runtime_dir / "election.json").write_text(
         json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    (trustee_dir / "election-key.json").write_text(
+        json.dumps(
+            {
+                "context_sha256": context_sha256,
+                "context_id": context_sha256[:16],
+                "public_key_sha256": public_key_sha256,
+                "secret_key_sha256": secret_key_sha256,
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     return manifest
@@ -87,7 +112,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Initialize encrypted tallies and the voting API runtime."
     )
-    parser.add_argument("--roster", type=Path, required=True)
+    parser.add_argument("--employees", type=Path, required=True)
     parser.add_argument("--runtime-dir", type=Path, required=True)
     parser.add_argument("--trustee-dir", type=Path, required=True)
     parser.add_argument(
@@ -105,7 +130,7 @@ def main() -> None:
                 shutil.rmtree(path)
 
     manifest = setup_election(
-        roster_path=arguments.roster.resolve(),
+        employees_path=arguments.employees.resolve(),
         runtime_dir=runtime_dir,
         trustee_dir=trustee_dir,
     )

@@ -1,3 +1,10 @@
+"""Ballot validation, ordering, persistence, and encrypted tally updates.
+
+The service connects the privacy-preserving OpenFHE layer to ordinary
+application state. SQLite stores employee and participation metadata, while
+ballot choices and running A/B/C totals remain serialized ciphertext files.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -12,17 +19,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-from .openfhe_backend import OpenFHEBackend
+from he_voting.openfhe_backend import OpenFHEBackend
 from .settings import Settings
 
 
+# Initial value for the public ballot hash chain before the first submission.
 EMPTY_CHAIN_HASH = "0" * 64
+
+# Limit each uploaded component before writing it to disk or passing it to the
+# native OpenFHE deserializer.
 MAX_CIPHERTEXT_BYTES = 2 * 1024 * 1024
 CHOICE_NAMES = ("a", "b", "c")
 
 
 @dataclass(frozen=True)
 class Receipt:
+    """Public proof that the service recorded a submission in a given order."""
+
     receipt: str
     status: str
     sequence: int
@@ -33,43 +46,69 @@ class Receipt:
 class VotingService:
     """Ordered ballot processor.
 
-    The service never receives an employee ID or plaintext choice. A
-    per-election voter token is hashed for eligibility and participation
-    reporting. Every eligible submission is added; only choices and running
-    tallies use HE.
+    The encrypted API receives an employee ID plus three ciphertexts. SQLite
+    records which prepared employee submitted, but never stores their choice.
+    Every submission from a prepared employee is added to the encrypted tally;
+    repeated submissions are intentionally counted by this demo.
     """
 
     def __init__(self, settings: Settings):
+        # Refuse to start until public material and all encrypted tallies exist.
         settings.validate()
         self.settings = settings
         self.crypto = OpenFHEBackend(settings.public_dir)
+        # This lock orders file and database updates within one Python process.
+        # It is why the API must run with exactly one worker.
         self._lock = threading.Lock()
 
+        # setup_election creates these normally, but mkdir keeps service startup
+        # tolerant of missing empty storage directories.
         settings.ballots_dir.mkdir(parents=True, exist_ok=True)
         (settings.runtime_dir / "tmp").mkdir(parents=True, exist_ok=True)
         self._initialize_database()
 
     def _connect(self) -> sqlite3.Connection:
+        """Open a durable SQLite connection for one short transaction."""
         connection = sqlite3.connect(
             self.settings.database_path,
             timeout=30,
         )
         connection.row_factory = sqlite3.Row
+        # WAL improves reader/writer behavior; FULL asks SQLite to sync commits
+        # before reporting success.
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=FULL")
         return connection
 
     def _initialize_database(self) -> None:
+        """Create the metadata schema and migrate older timing-less runtimes."""
         with self._connect() as connection:
+            existing_ballot_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(ballots)"
+                ).fetchall()
+            }
+            if (
+                existing_ballot_columns
+                and "employee_id" not in existing_ballot_columns
+            ):
+                raise RuntimeError(
+                    "legacy voter-token runtime detected; prepare a fresh "
+                    "election runtime for the employee-ID app"
+                )
             connection.executescript(
                 """
-                CREATE TABLE IF NOT EXISTS eligible_tokens (
-                    token_hash TEXT PRIMARY KEY
+                -- Prepared employees populate the UI dropdown.
+                CREATE TABLE IF NOT EXISTS employees (
+                    employee_id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL
                 );
 
+                -- The choice itself lives at ciphertext_path, never in SQLite.
                 CREATE TABLE IF NOT EXISTS ballots (
                     receipt TEXT PRIMARY KEY,
-                    token_hash TEXT NOT NULL,
+                    employee_id TEXT NOT NULL,
                     ballot_hash TEXT NOT NULL,
                     sequence INTEGER NOT NULL UNIQUE,
                     chain_hash TEXT NOT NULL,
@@ -107,9 +146,10 @@ class VotingService:
 
     @staticmethod
     def _receipt_status(internal_status: str) -> str:
+        """Map internal/legacy database states to the small public API vocabulary."""
         return {
             "accepted": "accepted",
-            "rejected_unknown_token": "rejected",
+            "rejected_unknown_employee": "rejected",
             # Compatibility with runtimes created by the older encrypted-flag
             # implementation.
             "evaluated": "accepted",
@@ -117,23 +157,33 @@ class VotingService:
         }.get(internal_status, "recorded")
 
     @staticmethod
-    def token_hash(voter_token: str) -> str:
-        normalized = voter_token.strip().lower()
-        if len(normalized) != 64:
-            raise ValueError("voter token must contain 64 hexadecimal characters")
-        try:
-            bytes.fromhex(normalized)
-        except ValueError as error:
-            raise ValueError(
-                "voter token must contain 64 hexadecimal characters"
-            ) from error
-        return hashlib.sha256(normalized.encode("ascii")).hexdigest()
+    def normalize_employee_id(employee_id: str) -> str:
+        """Validate the visible employee identifier used by the demo app."""
+        normalized = employee_id.strip()
+        if not normalized:
+            raise ValueError("employee ID must not be empty")
+        if len(normalized) > 128:
+            raise ValueError("employee ID must not exceed 128 characters")
+        return normalized
 
-    def register_tokens(self, voter_tokens: Iterable[str]) -> int:
-        rows = [(self.token_hash(token),) for token in voter_tokens]
+    def register_employees(
+        self,
+        employees: Iterable[tuple[str, str]],
+    ) -> int:
+        """Store the prepared employee IDs and display names."""
+        rows = []
+        for employee_id, display_name in employees:
+            normalized_id = self.normalize_employee_id(employee_id)
+            normalized_name = display_name.strip() or normalized_id
+            rows.append((normalized_id, normalized_name))
+        if len({employee_id for employee_id, _ in rows}) != len(rows):
+            raise ValueError("employee IDs must be unique")
         with self._connect() as connection:
             connection.executemany(
-                "INSERT OR IGNORE INTO eligible_tokens(token_hash) VALUES (?)",
+                """
+                INSERT INTO employees(employee_id, display_name)
+                VALUES (?, ?)
+                """,
                 rows,
             )
         return len(rows)
@@ -142,6 +192,12 @@ class VotingService:
     def _validate_ciphertexts(
         encrypted_choice: dict[str, bytes],
     ) -> None:
+        """Perform transport-level validation before native deserialization.
+
+        Because the values are encrypted, this method cannot prove they contain
+        a valid one-hot 0/1 ballot. The MVP trusts its supplied client to create
+        valid A/B/C ciphertexts.
+        """
         if set(encrypted_choice) != set(CHOICE_NAMES):
             raise ValueError(
                 "encrypted choice must contain separate A, B, and C ciphertexts"
@@ -163,6 +219,11 @@ class VotingService:
         connection: sqlite3.Connection,
         ballot_hash: str,
     ) -> tuple[int, str]:
+        """Return the next sequence number and tamper-evident chain hash.
+
+        The hash chain exposes deletion, insertion, or reordering after
+        publication. It is not a digital signature by itself.
+        """
         sequence = int(
             connection.execute(
                 "SELECT value FROM metadata WHERE key = 'sequence'"
@@ -184,26 +245,34 @@ class VotingService:
 
     def submit(
         self,
-        voter_token: str,
+        employee_id: str,
         encrypted_choice: dict[str, bytes],
     ) -> Receipt:
+        """Record one row and add it when the employee ID was prepared."""
         processing_started = time.perf_counter()
         self._validate_ciphertexts(encrypted_choice)
-        token_hash = self.token_hash(voter_token)
-        ballot_digest = hashlib.sha256(token_hash.encode("ascii"))
+        normalized_employee_id = self.normalize_employee_id(employee_id)
+        # Bind the metadata receipt to the employee ID and the exact
+        # three ciphertext byte strings without revealing their plaintexts.
+        ballot_digest = hashlib.sha256(
+            normalized_employee_id.encode("utf-8")
+        )
         for choice_name in CHOICE_NAMES:
             ballot_digest.update(choice_name.encode("ascii"))
             ballot_digest.update(encrypted_choice[choice_name])
         ballot_hash = ballot_digest.hexdigest()
 
+        # Keep sequence allocation, ciphertext file replacement, and SQLite
+        # metadata updates ordered relative to other submissions in this worker.
         with self._lock:
             with self._connect() as connection:
+                # Eligibility is plaintext metadata; the vote choice is not.
                 eligible = (
                     connection.execute(
                         """
-                        SELECT 1 FROM eligible_tokens WHERE token_hash = ?
+                        SELECT 1 FROM employees WHERE employee_id = ?
                         """,
-                        (token_hash,),
+                        (normalized_employee_id,),
                     ).fetchone()
                     is not None
                 )
@@ -219,6 +288,8 @@ class VotingService:
                     / f"{sequence:012d}-{receipt_id}"
                 )
                 ballot_directory.mkdir(parents=True, exist_ok=False)
+                # Write to a temporary name and atomically rename each complete
+                # ciphertext so readers never observe a partially written file.
                 for choice_name in CHOICE_NAMES:
                     ballot_path = (
                         ballot_directory / f"choice_{choice_name}.ct"
@@ -228,8 +299,9 @@ class VotingService:
                     os.replace(ballot_temp, ballot_path)
 
                 submitted_at = datetime.now(timezone.utc).isoformat()
-                internal_status = "rejected_unknown_token"
+                internal_status = "rejected_unknown_employee"
                 if eligible:
+                    # Only eligible ballots affect the encrypted totals.
                     self._apply_encrypted_vote(
                         ballot_directory=ballot_directory,
                     )
@@ -242,7 +314,7 @@ class VotingService:
                     """
                     INSERT INTO ballots(
                         receipt,
-                        token_hash,
+                        employee_id,
                         ballot_hash,
                         sequence,
                         chain_hash,
@@ -255,7 +327,7 @@ class VotingService:
                     """,
                     (
                         receipt_id,
-                        token_hash,
+                        normalized_employee_id,
                         ballot_hash,
                         sequence,
                         chain_hash,
@@ -278,6 +350,7 @@ class VotingService:
                     (chain_hash,),
                 )
 
+                # Exiting the connection context commits the SQLite transaction.
                 return Receipt(
                     receipt=receipt_id,
                     status=self._receipt_status(internal_status),
@@ -290,6 +363,7 @@ class VotingService:
         self,
         ballot_directory: Path,
     ) -> None:
+        """Calculate and install the next encrypted A/B/C tally files."""
         with tempfile.TemporaryDirectory(
             prefix="evaluate-",
             dir=self.settings.runtime_dir / "tmp",
@@ -299,6 +373,8 @@ class VotingService:
             previous_tally_directory = temporary / "previous_tally"
             next_tally_directory.mkdir()
             previous_tally_directory.mkdir()
+            # Preserve all three old totals so a failed replacement attempt can
+            # restore a consistent previous state.
             for choice_name in CHOICE_NAMES:
                 shutil.copy2(
                     self.settings.state_dir / f"tally_{choice_name}.ct",
@@ -313,6 +389,8 @@ class VotingService:
             )
 
             try:
+                # Replace the live tallies only after all next totals have been
+                # calculated and serialized successfully.
                 for choice_name in CHOICE_NAMES:
                     os.replace(
                         next_tally_directory / f"tally_{choice_name}.ct",
@@ -320,6 +398,7 @@ class VotingService:
                         / f"tally_{choice_name}.ct",
                     )
             except Exception:
+                # Best-effort rollback if installing any of A/B/C fails.
                 for choice_name in CHOICE_NAMES:
                     os.replace(
                         previous_tally_directory
@@ -330,6 +409,7 @@ class VotingService:
                 raise
 
     def get_receipt(self, receipt_id: str) -> Receipt | None:
+        """Look up the public status and chain position of one receipt."""
         with self._connect() as connection:
             row = connection.execute(
                 """
@@ -351,23 +431,75 @@ class VotingService:
         )
 
     def participation_records(self) -> dict[str, str]:
-        """Return token-hash participation metadata without ballot choices."""
+        """Return first-submission times by employee ID, without choices.
+
+        ``MIN`` and ``GROUP BY`` collapse repeated accepted submissions into
+        one participation entry even though every accepted ballot was counted.
+        """
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT token_hash, MIN(created_at) AS submitted_at
+                SELECT employee_id, MIN(created_at) AS submitted_at
                 FROM ballots
                 WHERE internal_status IN ('accepted', 'evaluated')
-                GROUP BY token_hash
+                GROUP BY employee_id
                 ORDER BY submitted_at
                 """
             ).fetchall()
         return {
-            row["token_hash"]: row["submitted_at"]
+            row["employee_id"]: row["submitted_at"]
             for row in rows
         }
 
+    def employees(self) -> list[dict[str, str | None]]:
+        """Return prepared employees and whether each has submitted."""
+        participation = self.participation_records()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT employee_id, display_name
+                FROM employees
+                ORDER BY employee_id
+                """
+            ).fetchall()
+        return [
+            {
+                "employee_id": row["employee_id"],
+                "display_name": row["display_name"],
+                "submitted_at": participation.get(row["employee_id"]),
+            }
+            for row in rows
+        ]
+
+    def progress(self) -> dict[str, int | str | None]:
+        """Return non-secret operational counts for the admin page."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM employees) AS eligible_employees,
+                    COUNT(*) AS recorded_submissions,
+                    SUM(CASE WHEN internal_status = 'accepted' THEN 1 ELSE 0 END)
+                        AS encrypted_ballots,
+                    COUNT(DISTINCT CASE
+                        WHEN internal_status = 'accepted' THEN employee_id
+                    END) AS participating_employees,
+                    MAX(created_at) AS latest_submission
+                FROM ballots
+                """
+            ).fetchone()
+        return {
+            "eligible_employees": int(row["eligible_employees"] or 0),
+            "recorded_submissions": int(row["recorded_submissions"] or 0),
+            "encrypted_ballots": int(row["encrypted_ballots"] or 0),
+            "participating_employees": int(
+                row["participating_employees"] or 0
+            ),
+            "latest_submission": row["latest_submission"],
+        }
+
     def bulletin_board(self) -> list[dict[str, object]]:
+        """Return ordered public receipt hashes without IDs or vote choices."""
         with self._connect() as connection:
             rows = connection.execute(
                 """

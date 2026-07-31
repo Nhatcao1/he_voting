@@ -3,20 +3,28 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, status
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .service import VotingService
+from .voting_service import VotingService
 from .settings import Settings
 
 
 class VoteRequest(BaseModel):
-    voter_token: str = Field(min_length=64, max_length=64)
+    employee_id: str = Field(min_length=1, max_length=128)
     encrypted_choice_a: str = Field(min_length=1)
     encrypted_choice_b: str = Field(min_length=1)
     encrypted_choice_c: str = Field(min_length=1)
+
+
+class DemoVoteRequest(BaseModel):
+    employee_id: str = Field(min_length=1, max_length=128)
+    choice: str = Field(pattern="^[ABC]$")
 
 
 class VoteReceiptResponse(BaseModel):
@@ -34,23 +42,48 @@ def _base64_file(path: Path) -> str:
 def create_app(settings: Settings | None = None) -> FastAPI:
     active_settings = settings or Settings.from_environment()
     service = VotingService(active_settings)
+    app_directory = Path(__file__).resolve().parent
+    templates_directory = app_directory / "templates"
+    static_directory = app_directory / "static"
 
     app = FastAPI(
         title="HE Employee Voting API",
-        version="0.1.0",
+        version="0.2.0",
         description=(
-            "Accepts a voter token and an OpenFHE BFV encrypted A/B/C choice. "
-            "Ballot metadata records participation; the choice and running "
-            "tally remain encrypted."
+            "Accepts an employee ID and OpenFHE BFV encrypted A/B/C choice. "
+            "Employee participation is visible; choices and running totals "
+            "remain encrypted."
         ),
     )
     app.state.voting_service = service
+    app.mount(
+        "/static",
+        StaticFiles(directory=static_directory),
+        name="static",
+    )
+
+    @app.get("/", include_in_schema=False)
+    def home() -> RedirectResponse:
+        return RedirectResponse("/vote")
+
+    @app.get("/vote", include_in_schema=False)
+    def vote_page() -> FileResponse:
+        return FileResponse(templates_directory / "vote.html")
+
+    @app.get("/admin", include_in_schema=False)
+    def admin_page() -> FileResponse:
+        return FileResponse(templates_directory / "admin.html")
+
+    @app.get("/result", include_in_schema=False)
+    def result_page() -> FileResponse:
+        return FileResponse(templates_directory / "result.html")
 
     @app.get("/health")
     def health() -> dict[str, str]:
         return {
             "status": "ok",
             "backend": "openfhe-python",
+            "context_id": active_settings.context_id,
         }
 
     @app.get("/election/public-material")
@@ -87,7 +120,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
             }
             receipt = service.submit(
-                request.voter_token,
+                request.employee_id,
                 encrypted_choice,
             )
         except (ValueError, binascii.Error) as error:
@@ -96,6 +129,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 detail=str(error),
             ) from error
         return VoteReceiptResponse(**receipt.__dict__)
+
+    @app.get("/demo/employees")
+    def demo_employees() -> list[dict[str, str | None]]:
+        return service.employees()
+
+    @app.post(
+        "/demo/vote",
+        response_model=VoteReceiptResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def demo_vote(request: DemoVoteRequest) -> VoteReceiptResponse:
+        """Demo adapter: encrypt one UI choice, then use the normal service."""
+        try:
+            encryption_started = time.perf_counter()
+            encrypted_choice = service.crypto.encrypt_choice(request.choice)
+            encryption_ms = (time.perf_counter() - encryption_started) * 1000
+            receipt = service.submit(request.employee_id, encrypted_choice)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(error),
+            ) from error
+        response = receipt.__dict__.copy()
+        response["processing_ms"] = (
+            float(response["processing_ms"]) + encryption_ms
+        )
+        return VoteReceiptResponse(**response)
+
+    @app.get("/demo/progress")
+    def demo_progress() -> dict[str, object]:
+        progress = service.progress()
+        ciphertext_files = list(
+            active_settings.runtime_dir.rglob("*.ct")
+        )
+        progress.update(
+            {
+                "context_id": active_settings.context_id,
+                "ciphertext_files": len(ciphertext_files),
+                "ciphertext_storage_bytes": sum(
+                    path.stat().st_size for path in ciphertext_files
+                ),
+                "result_published": (
+                    active_settings.runtime_dir
+                    / "published_result.json"
+                ).is_file(),
+            }
+        )
+        return progress
 
     @app.get(
         "/election/receipt/{receipt_id}",

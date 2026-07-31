@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import csv
 import json
 import sys
 import urllib.error
@@ -15,14 +14,6 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "python"))
 
 from he_voting.openfhe_backend import OpenFHEBackend  # noqa: E402
-
-
-def find_voter_token(roster_path: Path, employee_id: str) -> str:
-    with roster_path.open(encoding="utf-8", newline="") as input_file:
-        for row in csv.DictReader(input_file):
-            if row["employee_id"] == employee_id:
-                return row["voter_token"]
-    raise ValueError(f"employee ID not found in local roster: {employee_id}")
 
 
 class VoteEncryptor:
@@ -44,12 +35,12 @@ def encrypt_choice(
 
 def submit_vote(
     api_url: str,
-    voter_token: str,
+    employee_id: str,
     encrypted_choice: dict[str, bytes],
 ) -> dict[str, object]:
     payload = json.dumps(
         {
-            "voter_token": voter_token,
+            "employee_id": employee_id,
             "encrypted_choice_a": base64.b64encode(
                 encrypted_choice["a"]
             ).decode("ascii"),
@@ -80,28 +71,22 @@ def submit_vote(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Encrypt one A/B/C choice locally and submit it with the employee's "
-            "per-election voter token. The employee ID is never sent to the API."
+            "Encrypt one A/B/C choice locally and submit it with an employee ID."
         )
     )
     parser.add_argument("--employee-id", required=True)
     parser.add_argument("--choice", choices=["A", "B", "C"], required=True)
-    parser.add_argument("--roster", type=Path, required=True)
     parser.add_argument("--public-dir", type=Path, required=True)
     parser.add_argument("--api-url", default="http://127.0.0.1:8000")
     arguments = parser.parse_args()
 
-    voter_token = find_voter_token(
-        arguments.roster.resolve(),
-        arguments.employee_id,
-    )
     ciphertext = encrypt_choice(
         arguments.public_dir.resolve(),
         arguments.choice,
     )
     response = submit_vote(
         arguments.api_url,
-        voter_token,
+        arguments.employee_id,
         ciphertext,
     )
     print(json.dumps(response))

@@ -15,13 +15,14 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(PROJECT_DIR / "scripts"))
 sys.path.insert(0, str(PROJECT_DIR / "python"))
 
+from app.settings import Settings  # noqa: E402
+from app.voting_service import VotingService  # noqa: E402
 from client import VoteEncryptor  # noqa: E402
 from he_voting.openfhe_backend import OpenFHEBackend  # noqa: E402
-from he_voting.service import VotingService  # noqa: E402
-from he_voting.settings import Settings  # noqa: E402
 
 
 CHOICE_NAMES = ("a", "b", "c")
@@ -32,11 +33,11 @@ ENCODINGS = {
 }
 
 
-def read_roster(path: Path) -> list[dict[str, str]]:
+def read_employees(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8", newline="") as input_file:
         rows = list(csv.DictReader(input_file))
     if not rows:
-        raise ValueError("roster CSV is empty")
+        raise ValueError("employees CSV is empty")
     return rows
 
 
@@ -220,7 +221,7 @@ def main() -> None:
         )
     )
     parser.add_argument("--votes", type=Path, required=True)
-    parser.add_argument("--roster", type=Path, required=True)
+    parser.add_argument("--employees", type=Path, required=True)
     parser.add_argument("--runtime-dir", type=Path, required=True)
     parser.add_argument("--trustee-dir", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
@@ -228,10 +229,9 @@ def main() -> None:
     arguments = parser.parse_args()
 
     votes = read_votes(arguments.votes.resolve())
-    roster_rows = read_roster(arguments.roster.resolve())
-    token_by_employee = {
-        row["employee_id"]: row["voter_token"]
-        for row in roster_rows
+    employee_rows = read_employees(arguments.employees.resolve())
+    prepared_employee_ids = {
+        row["employee_id"] for row in employee_rows
     }
     settings = Settings(runtime_dir=arguments.runtime_dir.resolve())
     encryptor = VoteEncryptor(settings.public_dir)
@@ -302,10 +302,9 @@ def main() -> None:
 
         for row_number, row in enumerate(votes, start=1):
             employee_id = row["employee_id"]
-            voter_token = token_by_employee.get(employee_id)
-            if voter_token is None:
+            if employee_id not in prepared_employee_ids:
                 raise ValueError(
-                    f"employee {employee_id} is missing from the roster"
+                    f"employee {employee_id} is missing from employees.csv"
                 )
 
             vote_started = time.perf_counter()
@@ -317,7 +316,7 @@ def main() -> None:
 
             processing_started = time.perf_counter()
             receipt = service.submit(
-                voter_token,
+                employee_id,
                 ciphertexts,
             )
             processing_ms = (
@@ -480,13 +479,12 @@ def main() -> None:
             ],
         )
         participation_writer.writeheader()
-        for roster_row in roster_rows:
-            token_hash = VotingService.token_hash(roster_row["voter_token"])
-            record = participation_records.get(token_hash)
+        for employee_row in employee_rows:
+            record = participation_records.get(employee_row["employee_id"])
             participation_writer.writerow(
                 {
-                    "employee_id": roster_row["employee_id"],
-                    "display_name": roster_row.get("display_name", ""),
+                    "employee_id": employee_row["employee_id"],
+                    "display_name": employee_row.get("display_name", ""),
                     "submitted": str(record is not None).lower(),
                     "submitted_at": "" if record is None else record,
                 }
@@ -541,7 +539,7 @@ def main() -> None:
 
     summary = {
         "votes_submitted": len(votes),
-        "eligible_employees": len(roster_rows),
+        "eligible_employees": len(employee_rows),
         "participating_employees": len(participation_records),
         "total_vote_path_seconds": round(vote_path_seconds, 3),
         "benchmark_loop_seconds_including_evidence": round(

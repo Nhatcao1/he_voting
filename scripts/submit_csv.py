@@ -11,7 +11,7 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "scripts"))
 
-from client import VoteEncryptor, find_voter_token, submit_vote  # noqa: E402
+from client import VoteEncryptor, submit_vote  # noqa: E402
 
 
 def main() -> None:
@@ -19,12 +19,10 @@ def main() -> None:
         description="Encrypt and submit a two-column employee_id,choice CSV."
     )
     parser.add_argument("--votes", type=Path, required=True)
-    parser.add_argument("--roster", type=Path, required=True)
     parser.add_argument("--public-dir", type=Path, required=True)
     parser.add_argument("--api-url", default="http://127.0.0.1:8000")
     arguments = parser.parse_args()
 
-    roster = arguments.roster.resolve()
     with arguments.votes.resolve().open(
         encoding="utf-8", newline=""
     ) as input_file:
@@ -35,11 +33,10 @@ def main() -> None:
     for index, row in enumerate(rows, start=1):
         employee_id = row["employee_id"]
         choice = row["choice"]
-        token = find_voter_token(roster, employee_id)
         ciphertext = encryptor.encrypt_choice(choice)
         receipt = submit_vote(
             arguments.api_url,
-            token,
+            employee_id,
             ciphertext,
         )
         receipts.append(receipt)

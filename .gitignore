@@ -3,6 +3,9 @@ build/
 runtime/
 runtime_trustee/
 generated/
+runtime*/
+trustee*/
+generated*/
 benchmark_data/
 benchmark_results/
 runtime_benchmark*/

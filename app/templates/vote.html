@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Submit vote · HE Voting</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/vote.js" defer></script>
+  </head>
+  <body>
+    <nav>
+      <strong>HE Voting Demo</strong>
+      <a href="/vote" aria-current="page">Vote</a>
+      <a href="/admin">Progress</a>
+      <a href="/result">Result</a>
+    </nav>
+    <main class="narrow">
+      <p class="eyebrow">OpenFHE · A/B/C election</p>
+      <h1>Submit one encrypted choice.</h1>
+      <p class="lede">
+        Select a prepared employee and choose A, B, or C. The app creates three
+        OpenFHE ciphertexts and adds them to the encrypted running totals.
+      </p>
+      <section class="card">
+        <p class="notice">
+          Demo adapter: this page sends the choice to the app, which encrypts it
+          immediately. The production endpoint accepts ciphertexts created by a
+          separate client and does not receive the plaintext choice.
+        </p>
+        <form id="vote-form">
+          <label for="employee-id">Employee</label>
+          <select id="employee-id" required>
+            <option value="">Loading prepared employees…</option>
+          </select>
+          <fieldset>
+            <legend>Choice</legend>
+            <div class="choices">
+              <label class="choice"><input type="radio" name="choice" value="A" required>A</label>
+              <label class="choice"><input type="radio" name="choice" value="B">B</label>
+              <label class="choice"><input type="radio" name="choice" value="C">C</label>
+            </div>
+          </fieldset>
+          <button id="submit-vote" type="submit">Encrypt and submit</button>
+          <div id="status" class="status hidden" role="status"></div>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

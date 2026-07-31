@@ -24,7 +24,7 @@ flowchart LR
     B --> C["Hòm phiếu điện tử<br/>lưu ciphertext"]
     C --> D["HE Tally Service<br/>cộng các phiếu mã hóa"]
     D --> E["Encrypted total"]
-    E --> F["Hội đồng giải mã<br/>threshold decryption"]
+    E --> F["Trustee giải mã<br/>aggregate only"]
     F --> G["Kết quả cuối cùng"]
 
 4. Ví dụ kiểm phiếu
@@ -53,7 +53,7 @@ Xác thực người bỏ phiếu và ngăn bỏ phiếu nhiều lần.
 
 Zero-knowledge proof để chứng minh mỗi phiếu hợp lệ, ví dụ chỉ chọn đúng một ứng viên.
 
-Threshold key để không một quản trị viên nào tự giải mã được phiếu.
+Threshold key là bước nâng cấp sau; MVP hiện dùng một trustee key riêng.
 
 Chữ ký số và audit log để phát hiện phiếu bị sửa hoặc chèn thêm.
 
@@ -86,6 +86,7 @@ Threshold decrypt aggregate only
         ↓
 Publish and independently verify final totals
 
-Phiên bản MVP theo dõi việc đã gửi phiếu bằng `token_hash` duy nhất trong
-SQLite. Nội dung lựa chọn và tổng A/B/C vẫn được mã hóa; chỉ tổng cuối cùng được
-giải mã. Thiết kế triển khai nằm trong `IMPLEMENTATION_PLAN.md`.
+Phiên bản MVP lưu `employee_id` và trạng thái tham gia trong SQLite để phục vụ
+dropdown/demo progress. Nội dung lựa chọn và tổng A/B/C vẫn được mã hóa; chỉ
+tổng cuối cùng được giải mã. Thiết kế triển khai nằm trong
+`IMPLEMENTATION_PLAN.md`.

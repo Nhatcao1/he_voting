@@ -29,7 +29,6 @@ def main() -> None:
         nargs="+",
         default=list(DEFAULT_QUOTAS),
     )
-    parser.add_argument("--seed", type=int, default=20260730)
     arguments = parser.parse_args()
 
     root = arguments.out_dir.resolve()
@@ -44,7 +43,6 @@ def main() -> None:
             output_directory=fixture_dir,
             employee_count=quota,
             vote_count=quota,
-            seed=arguments.seed + quota,
         )
         fixtures.append(
             {

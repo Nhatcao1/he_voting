@@ -14,34 +14,32 @@ employee_id,choice
 
 Every generated row uses a separate employee and is independently encrypted.
 
-The client-side roster maps each test employee to a per-election voter token:
+The prepared employee list is:
 
 ```text
 employee_id
 display_name
-voter_token
 ```
 
-The employee ID and display name are not submitted to the voting API.
+The UI loads this list into its employee dropdown.
 
 ## 2. Participation and confidentiality
 
-The API hashes the submitted voter token. SQLite records:
+The API receives the selected employee ID. SQLite records:
 
 ```text
-eligible_tokens(token_hash)
-ballots(token_hash, ciphertext_path, receipt, audit metadata)
+employees(employee_id, display_name)
+ballots(employee_id, ciphertext_path, receipt, audit metadata)
 ```
 
-Participation is intentionally visible metadata. An authorized administrator
-with the roster can determine whether an employee submitted, but cannot
-determine the employee's choice. This simplified MVP does not enforce one
-submission per employee.
+Participation is intentionally visible metadata. The application can determine
+whether an employee submitted, but it cannot read the encrypted choice. This
+simplified MVP does not enforce one submission per employee.
 
 The security boundary is:
 
 ```text
-Employee participation       visible through token metadata
+Employee participation       visible through employee metadata
 Employee A/B/C choice        encrypted
 Running A/B/C totals         encrypted
 Final aggregate totals       decrypted by the trustee
@@ -112,9 +110,9 @@ The final aggregate is:
 | Component | Responsibility |
 |---|---|
 | `python/he_voting/openfhe_backend.py` | BFV setup, row encryption, three additions, aggregate decryption |
-| `python/he_voting/service.py` | Eligibility, participation, ordered tally updates, receipts |
-| `python/he_voting/api.py` | FastAPI transport |
-| `scripts/generate_data.py` | Test roster, rows, and expected result |
+| `app/voting_service.py` | Employee metadata, participation, ordered tally updates, receipts |
+| `app/api.py` | FastAPI transport and demo UI routes |
+| `scripts/generate_data.py` | Test employees, rows, and expected result |
 | `scripts/setup_election.py` | Keys, encrypted zero tallies, SQLite runtime |
 | `scripts/client.py` | Encrypt and submit one row |
 | `scripts/benchmark_votes.py` | Sequential timing and client evidence bundle |
@@ -150,7 +148,7 @@ ciphertext filename, byte size, SHA-256 hash, and a short Base64 preview. The
 preview is opaque serialized ciphertext data and does not reveal the underlying
 scalar.
 
-`participation.csv` maps the restricted test roster to submitted/not-submitted
+`participation.csv` maps the prepared employees to submitted/not-submitted
 metadata without including any choice.
 
 `final_result.csv` compares the generator's expected counts with the trustee's
@@ -170,8 +168,8 @@ ciphertext files.
 
 - The MVP uses one trustee secret key rather than threshold shares.
 - The supplied client is trusted to encode exactly one of A, B, or C.
-- The test generator creates a roster that can link employees to participation.
+- Employee IDs directly link employees to participation.
 - Repeated submissions are not prevented in this simplified benchmark.
-- A stolen voter token can be used by another party.
+- The demo employee dropdown is not an authentication mechanism.
 - Receipts and the hash chain provide audit evidence but do not force the
   server to accept a request.
