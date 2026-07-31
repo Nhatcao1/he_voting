@@ -275,12 +275,23 @@ vote_evidence.csv            input, one-hot encoding, status, ciphertext metadat
 participation.csv            employee submitted/not-submitted status, no choice
 ciphertexts/ballots/         three retained ciphertext files per submitted row
 ciphertexts/final_tally/     final encrypted A/B/C tally files
+key_bundle/public/           crypto context and election public key
+key_bundle/private/          election secret key; do not publish or share
+key_bundle/manifest.json     key inventory and evaluation-key status
 expected_result.json         generated expected A/B/C totals
 decrypted_result.json        aggregate-only trustee output
 final_result.csv             expected vs decrypted totals and ciphertext previews
-checksums.sha256             integrity hashes for every retained ciphertext
+checksums.sha256             integrity hashes for ciphertext and key artifacts
 summary.json                 overall timing and result comparison
 ```
+
+The benchmark key bundle is intentionally self-contained for local
+reproducibility and therefore contains the election secret key. Treat the
+entire benchmark output as private. The voting calculation uses `EvalAdd`
+only, so no multiplication, rotation, or other evaluation key is generated;
+`key_bundle/manifest.json` records this explicitly. If serialized evaluation
+key files are added to the election public directory in the future, the
+benchmark copies them into `key_bundle/public/evaluation_keys/`.
 
 Quickly inspect the client evidence:
 

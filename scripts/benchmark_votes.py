@@ -92,6 +92,126 @@ def expected_from_rows(votes: list[dict[str, str]]) -> dict[str, int]:
     return result
 
 
+def copy_key_bundle(
+    *,
+    public_directory: Path,
+    trustee_directory: Path,
+    output_directory: Path,
+) -> tuple[Path, list[tuple[str, str]]]:
+    """Copy all material needed to reproduce and decrypt this benchmark.
+
+    This voting workload performs ciphertext addition only, so OpenFHE does
+    not generate multiplication, rotation, or other evaluation keys.
+    """
+    key_bundle_directory = output_directory / "key_bundle"
+    public_bundle_directory = key_bundle_directory / "public"
+    evaluation_bundle_directory = (
+        public_bundle_directory / "evaluation_keys"
+    )
+    private_bundle_directory = key_bundle_directory / "private"
+    public_bundle_directory.mkdir(parents=True, exist_ok=True)
+    evaluation_bundle_directory.mkdir(parents=True, exist_ok=True)
+    private_bundle_directory.mkdir(parents=True, exist_ok=True)
+
+    required_files = (
+        (
+            public_directory / "crypto_context.bin",
+            public_bundle_directory / "crypto_context.bin",
+            "crypto_context",
+        ),
+        (
+            public_directory / "public_key.bin",
+            public_bundle_directory / "public_key.bin",
+            "public_key",
+        ),
+        (
+            trustee_directory / "secret_key.bin",
+            private_bundle_directory / "secret_key.bin",
+            "secret_key",
+        ),
+    )
+    copied_files: dict[str, str] = {}
+    checksum_rows: list[tuple[str, str]] = []
+    for source, destination, material_name in required_files:
+        if not source.is_file():
+            raise FileNotFoundError(
+                f"cannot create benchmark key bundle; missing {source}"
+            )
+        shutil.copy2(source, destination)
+        if material_name == "secret_key":
+            destination.chmod(0o600)
+        relative_path = str(destination.relative_to(output_directory))
+        copied_files[material_name] = relative_path
+        checksum_rows.append(
+            (hashlib.sha256(destination.read_bytes()).hexdigest(), relative_path)
+        )
+
+    evaluation_key_sources = sorted(
+        path
+        for path in public_directory.iterdir()
+        if path.is_file()
+        and (
+            "eval" in path.name.lower()
+            or "rotation" in path.name.lower()
+            or "automorphism" in path.name.lower()
+            or "relinear" in path.name.lower()
+        )
+    )
+    evaluation_key_files: list[str] = []
+    for source in evaluation_key_sources:
+        destination = evaluation_bundle_directory / source.name
+        shutil.copy2(source, destination)
+        relative_path = str(destination.relative_to(output_directory))
+        evaluation_key_files.append(relative_path)
+        checksum_rows.append(
+            (hashlib.sha256(destination.read_bytes()).hexdigest(), relative_path)
+        )
+
+    manifest_path = key_bundle_directory / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "warning": (
+                    "PRIVATE: this bundle contains the election secret key and "
+                    "can decrypt the retained benchmark tally."
+                ),
+                "public_material": {
+                    "crypto_context": copied_files["crypto_context"],
+                    "public_key": copied_files["public_key"],
+                },
+                "private_material": {
+                    "secret_key": copied_files["secret_key"],
+                },
+                "evaluation_keys": {
+                    "generated": bool(evaluation_key_files),
+                    "files": evaluation_key_files,
+                    "reason": (
+                        "Serialized evaluation keys found in the election "
+                        "public directory were copied."
+                        if evaluation_key_files
+                        else (
+                            "The ballot tally uses ciphertext EvalAdd only; "
+                            "multiplication and rotation evaluation keys are "
+                            "not required or generated."
+                        )
+                    ),
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest_relative_path = str(manifest_path.relative_to(output_directory))
+    checksum_rows.append(
+        (
+            hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            manifest_relative_path,
+        )
+    )
+    return key_bundle_directory, checksum_rows
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -129,6 +249,12 @@ def main() -> None:
     end_to_end_times: list[float] = []
     expected_result = expected_from_rows(votes)
     checksum_rows: list[tuple[str, str]] = []
+    key_bundle_directory, key_bundle_checksums = copy_key_bundle(
+        public_directory=settings.public_dir,
+        trustee_directory=arguments.trustee_dir.resolve(),
+        output_directory=output_directory,
+    )
+    checksum_rows.extend(key_bundle_checksums)
 
     overall_started = time.perf_counter()
     with (
@@ -445,6 +571,10 @@ def main() -> None:
             "expected_result_json": str(expected_path),
             "decrypted_result_json": str(decrypted_path),
             "ciphertext_directory": str(ciphertext_root),
+            "key_bundle_directory": str(key_bundle_directory),
+            "key_bundle_manifest": str(
+                key_bundle_directory / "manifest.json"
+            ),
             "checksums_sha256": str(checksums_path),
         },
     }

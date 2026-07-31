@@ -299,6 +299,26 @@ def test_benchmark_writes_client_evidence_bundle(
     ) == ("1", "0", "0")
     assert len(list((output / "ciphertexts" / "ballots").rglob("*.ct"))) == 12
     assert len(list((output / "ciphertexts" / "final_tally").glob("*.ct"))) == 3
+    key_bundle = output / "key_bundle"
+    assert (
+        key_bundle / "public" / "crypto_context.bin"
+    ).read_bytes() == (runtime / "public" / "crypto_context.bin").read_bytes()
+    assert (
+        key_bundle / "public" / "public_key.bin"
+    ).read_bytes() == (runtime / "public" / "public_key.bin").read_bytes()
+    assert (
+        key_bundle / "private" / "secret_key.bin"
+    ).read_bytes() == (trustee / "secret_key.bin").read_bytes()
+    key_manifest = json.loads((key_bundle / "manifest.json").read_text())
+    assert key_manifest["evaluation_keys"] == {
+        "generated": False,
+        "files": [],
+        "reason": (
+            "The ballot tally uses ciphertext EvalAdd only; multiplication "
+            "and rotation evaluation keys are not required or generated."
+        ),
+    }
+    assert summary["artifacts"]["key_bundle_directory"] == str(key_bundle)
     with (output / "participation.csv").open(newline="") as participation_file:
         participation = list(csv.DictReader(participation_file))
     assert [row["submitted"] for row in participation] == [
