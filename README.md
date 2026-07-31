@@ -63,10 +63,12 @@ PYTHONPATH=/root/he_voting:/root/he_voting/python \
   --workers 1
 ```
 
-Open `/vote`, `/admin`, or `/result`. The demo vote page encrypts the selected
-choice in the app process because a Python OpenFHE wheel cannot run in a normal
-browser. The production-style `/election/vote` endpoint accepts ciphertexts
-created by `scripts/client.py`.
+Open `/vote`, `/admin`, `/storage`, or `/result`. The Storage page lists
+retained ciphertext files with their size, SHA-256, and a short opaque Base64
+preview. The demo vote page encrypts the selected choice in the app process
+because a Python OpenFHE wheel cannot run in a normal browser. The
+production-style `/election/vote` endpoint accepts ciphertexts created by
+`scripts/client.py`.
 
 ## Submit prepared rows separately
 

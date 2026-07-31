@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -77,6 +79,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/result", include_in_schema=False)
     def result_page() -> FileResponse:
         return FileResponse(templates_directory / "result.html")
+
+    @app.get("/storage", include_in_schema=False)
+    def storage_page() -> FileResponse:
+        return FileResponse(templates_directory / "storage.html")
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -177,6 +183,72 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
         )
         return progress
+
+    @app.get("/demo/storage")
+    def demo_storage(
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=50, ge=10, le=200),
+    ) -> dict[str, object]:
+        """Describe retained ciphertexts without decrypting or downloading them."""
+        tally_paths = sorted(active_settings.state_dir.glob("*.ct"))
+        ballot_paths = sorted(
+            active_settings.ballots_dir.rglob("*.ct"),
+            reverse=True,
+        )
+        ciphertext_paths = tally_paths + ballot_paths
+        total_files = len(ciphertext_paths)
+        start = (page - 1) * page_size
+        selected_paths = ciphertext_paths[start : start + page_size]
+
+        files = []
+        for path in selected_paths:
+            value = path.read_bytes()
+            files.append(
+                {
+                    "category": (
+                        "running tally"
+                        if path.parent == active_settings.state_dir
+                        else "retained ballot"
+                    ),
+                    "path": str(
+                        path.relative_to(active_settings.runtime_dir)
+                    ),
+                    "bytes": len(value),
+                    "sha256": hashlib.sha256(value).hexdigest(),
+                    "preview_base64": base64.b64encode(
+                        value[:48]
+                    ).decode("ascii"),
+                    "modified_at": datetime.fromtimestamp(
+                        path.stat().st_mtime,
+                        tz=timezone.utc,
+                    ).isoformat(),
+                }
+            )
+
+        tally_bytes = sum(path.stat().st_size for path in tally_paths)
+        ballot_bytes = sum(path.stat().st_size for path in ballot_paths)
+        return {
+            "context_id": active_settings.context_id,
+            "summary": {
+                "total_files": total_files,
+                "total_bytes": tally_bytes + ballot_bytes,
+                "tally_files": len(tally_paths),
+                "tally_bytes": tally_bytes,
+                "ballot_files": len(ballot_paths),
+                "ballot_bytes": ballot_bytes,
+                "retained_ballots": len(
+                    {path.parent for path in ballot_paths}
+                ),
+            },
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total_pages": max(
+                    1, (total_files + page_size - 1) // page_size
+                ),
+            },
+            "files": files,
+        }
 
     @app.get(
         "/election/receipt/{receipt_id}",

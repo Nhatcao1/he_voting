@@ -166,6 +166,7 @@ def test_api_accepts_each_encrypted_submission(
             == "openfhe-python"
         )
         assert client.get("/vote").status_code == 200
+        assert client.get("/storage").status_code == 200
         assert len(client.get("/demo/employees").json()) == 4
         assert len(client.get("/election/bulletin-board").json()) == 2
 

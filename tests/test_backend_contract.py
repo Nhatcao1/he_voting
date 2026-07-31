@@ -238,11 +238,29 @@ def test_python_setup_client_and_service_contract(
     app = create_app(settings)
     with TestClient(app) as client:
         assert client.get("/vote").status_code == 200
+        assert client.get("/storage").status_code == 200
         employees = client.get("/demo/employees").json()
         assert employees[0]["employee_id"] == "100001"
         progress = client.get("/demo/progress").json()
         assert progress["encrypted_ballots"] == 4
         assert progress["context_id"] == settings.context_id
+        storage = client.get("/demo/storage").json()
+        assert storage["summary"]["tally_files"] == 3
+        assert storage["summary"]["ballot_files"] == 12
+        assert storage["summary"]["total_files"] == 15
+        assert len(storage["files"]) == 15
+        assert all(
+            set(file_record)
+            == {
+                "category",
+                "path",
+                "bytes",
+                "sha256",
+                "preview_base64",
+                "modified_at",
+            }
+            for file_record in storage["files"]
+        )
 
 
 def test_benchmark_writes_client_evidence_bundle(

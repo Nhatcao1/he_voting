@@ -49,6 +49,7 @@ Open:
 ```text
 http://SERVER_IP:30880/vote
 http://SERVER_IP:30880/admin
+http://SERVER_IP:30880/storage
 http://SERVER_IP:30880/result
 ```
 

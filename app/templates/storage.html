@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ciphertext storage · HE Voting</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/storage.js" defer></script>
+  </head>
+  <body>
+    <nav>
+      <strong>HE Voting Demo</strong>
+      <a href="/vote">Vote</a>
+      <a href="/admin">Progress</a>
+      <a href="/storage" aria-current="page">Storage</a>
+      <a href="/result">Result</a>
+    </nav>
+    <main>
+      <p class="eyebrow">Opaque OpenFHE files</p>
+      <h1>Ciphertext storage.</h1>
+      <p class="lede">
+        Inspect retained ballot files and the current encrypted A/B/C totals.
+        Only file metadata, SHA-256, and the first 48 bytes as Base64 are shown.
+        Nothing on this page performs decryption.
+      </p>
+      <section class="grid">
+        <article class="card metric"><span>Retained ballots</span><strong id="retained-ballots">—</strong></article>
+        <article class="card metric"><span>Ciphertext files</span><strong id="total-files">—</strong></article>
+        <article class="card metric"><span>Total ciphertext storage</span><strong id="total-storage">—</strong></article>
+        <article class="card metric"><span>HE context</span><strong id="storage-context">—</strong></article>
+      </section>
+      <section class="card storage-card">
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Category</th>
+                <th>Stored file</th>
+                <th>Size</th>
+                <th>SHA-256</th>
+                <th>Base64 preview</th>
+              </tr>
+            </thead>
+            <tbody id="storage-rows">
+              <tr><td colspan="5">Loading ciphertext files…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pagination">
+          <button id="previous-page" type="button">Previous</button>
+          <span id="page-state">Page —</span>
+          <button id="next-page" type="button">Next</button>
+        </div>
+      </section>
+      <div id="storage-status" class="status hidden" role="status"></div>
+    </main>
+  </body>
+</html>
